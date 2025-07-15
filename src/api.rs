@@ -4,7 +4,7 @@ use axum::{
     extract::{Host, Path, State},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::AppState;
 use crate::service::RegisterResponse;
@@ -59,9 +59,33 @@ pub async fn register_lnaddr_handler(
         .map(Json)
 }
 
+pub async fn remove_lnaddr_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<RemoveRequest>,
+) -> Result<axum::http::StatusCode, axum::http::StatusCode> {
+    state
+        .service
+        .remove_lnaddr(
+            &payload.domain,
+            &payload.username,
+            &payload.authentication_token,
+        )
+        .await
+        .map_err(|_| axum::http::StatusCode::UNAUTHORIZED)?;
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterRequest {
     pub domain: String,
     pub username: String,
     pub lnurl: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RemoveRequest {
+    pub domain: String,
+    pub username: String,
+    pub authentication_token: String,
 }
