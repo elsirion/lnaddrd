@@ -2,7 +2,7 @@ pub mod pg;
 
 use std::{fmt::Display, str::FromStr, sync::Arc, time::SystemTime};
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,13 @@ pub trait IPaymentAddressRepository {
         destination: DestinationPaymentAddress,
         authentication_token: &str,
     ) -> Result<()>;
+
+    async fn remove_payment_address(
+        &self,
+        domain: &str,
+        username: &str,
+        authentication_token: &str,
+    ) -> Result<()>;
 }
 
 #[derive(Debug)]
@@ -39,17 +46,16 @@ pub struct PaymentAddress {
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum DestinationPaymentAddress {
     Lnurl(lnurl::lnurl::LnUrl),
-    LnAddress {
-        user: String,
-        domain: String,
-    },
+    LnAddress { user: String, domain: String },
 }
 
 impl DestinationPaymentAddress {
     pub fn url(&self) -> String {
         match self {
             DestinationPaymentAddress::Lnurl(lnurl) => lnurl.url.clone(),
-            DestinationPaymentAddress::LnAddress { user, domain } => format!("https://{domain}/.well-known/lnurlp/{user}"),
+            DestinationPaymentAddress::LnAddress { user, domain } => {
+                format!("https://{domain}/.well-known/lnurlp/{user}")
+            }
         }
     }
 }
@@ -58,7 +64,9 @@ impl Display for DestinationPaymentAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DestinationPaymentAddress::Lnurl(lnurl) => write!(f, "{}", lnurl),
-            DestinationPaymentAddress::LnAddress { user, domain } => write!(f, "{}@{}", user, domain),
+            DestinationPaymentAddress::LnAddress { user, domain } => {
+                write!(f, "{}@{}", user, domain)
+            }
         }
     }
 }

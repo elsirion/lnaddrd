@@ -9,7 +9,9 @@ use diesel::{
 };
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
-use super::{DestinationPaymentAddress, IPaymentAddressRepository, PaymentAddress, PaymentAddressRepository};
+use super::{
+    DestinationPaymentAddress, IPaymentAddressRepository, PaymentAddress, PaymentAddressRepository,
+};
 
 type PooledConnection =
     diesel::r2d2::PooledConnection<diesel::r2d2::ConnectionManager<PgConnection>>;
@@ -72,6 +74,31 @@ impl IPaymentAddressRepository for PgPaymentAddressRepository {
                 payment_addresses::authentication_token.eq(authentication_token),
             ))
             .execute(&mut conn)?;
+
+        Ok(())
+    }
+
+    async fn remove_payment_address(
+        &self,
+        domain: &str,
+        username: &str,
+        token: &str,
+    ) -> Result<()> {
+        use diesel::prelude::*;
+
+        let mut conn = self.pool.get()?;
+
+        let rows_deleted = diesel::delete(
+            payment_addresses::table
+                .filter(payment_addresses::domain.eq(domain))
+                .filter(payment_addresses::username.eq(username))
+                .filter(payment_addresses::authentication_token.eq(token)),
+        )
+        .execute(&mut conn)?;
+
+        if rows_deleted == 0 {
+            anyhow::bail!("No matching payment address with valid authentication token found");
+        }
 
         Ok(())
     }

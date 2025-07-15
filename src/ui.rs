@@ -1,5 +1,6 @@
 use crate::AppState;
 use crate::api::RegisterRequest;
+use crate::repository::DestinationPaymentAddress;
 use axum::{
     Form,
     extract::Path,
@@ -10,7 +11,6 @@ use maud::{DOCTYPE, Markup, html};
 use qrcode::QrCode;
 use qrcode::render::svg;
 use serde::Deserialize;
-use crate::repository::DestinationPaymentAddress;
 
 #[derive(Deserialize)]
 pub struct RegisterForm {
