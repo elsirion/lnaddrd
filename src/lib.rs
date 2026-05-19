@@ -1,7 +1,7 @@
 use anyhow::Result;
 use api::{
-    get_lnaddr_handler, get_lnaddr_manifest_handler, list_domains_handler, register_lnaddr_handler,
-    remove_lnaddr_handler,
+    generate_lnurl_handler, get_lnaddr_handler, get_lnaddr_manifest_handler,
+    list_domains_handler, register_lnaddr_handler, remove_lnaddr_handler,
 };
 use axum::{
     Router,
@@ -49,6 +49,10 @@ pub async fn serve(config: &Config) -> Result<()> {
         .route(
             "/.well-known/lnurlp/:username",
             get(get_lnaddr_manifest_handler),
+        )
+        .route(
+            "/lnurl/:username",
+            get(generate_lnurl_handler),
         )
         .route("/", get(register_form))
         .route("/ui/register", post(register_form_submit))
