@@ -12,6 +12,66 @@ use qrcode::QrCode;
 use qrcode::render::svg;
 use serde::Deserialize;
 
+const LNURL_GENERATOR_JS: &str = r#"
+(function() {
+    var C = window.LNURL_CONFIG;
+    var minSats = Math.ceil(C.minMsat / 1000);
+    var maxSats = Math.floor(C.maxMsat / 1000);
+
+    document.getElementById('range-display').textContent = minSats + ' \u2013 ' + maxSats + ' sats';
+
+    var input = document.getElementById('amount-sats');
+    input.min = minSats;
+    input.max = maxSats;
+
+    document.getElementById('generate-btn').addEventListener('click', async function() {
+        var errorEl = document.getElementById('amount-error');
+        var resultEl = document.getElementById('lnurl-result');
+        var sats = parseInt(input.value);
+
+        if (isNaN(sats) || input.value === '') {
+            errorEl.textContent = 'Please enter a valid amount';
+            errorEl.classList.remove('hidden');
+            resultEl.classList.add('hidden');
+            return;
+        }
+
+        var msat = sats * 1000;
+        if (msat < C.minMsat || msat > C.maxMsat) {
+            errorEl.textContent = 'Amount must be between ' + minSats + ' and ' + maxSats + ' sats';
+            errorEl.classList.remove('hidden');
+            resultEl.classList.add('hidden');
+            return;
+        }
+
+        errorEl.classList.add('hidden');
+
+        try {
+            var resp = await fetch('/lnurl/' + C.username + '?min_sendable=' + msat + '&max_sendable=' + msat);
+            if (!resp.ok) throw new Error('Server returned ' + resp.status);
+            var data = await resp.json();
+            var lnurl = data.lnurl;
+
+            document.getElementById('lnurl-text').textContent = lnurl;
+
+            var qrEl = document.getElementById('lnurl-qr');
+            if (typeof qrcode === 'function') {
+                var qr = qrcode(0, 'L');
+                qr.addData(lnurl);
+                qr.make();
+                qrEl.innerHTML = qr.createSvgTag({cellSize: 4, margin: 4});
+            }
+
+            resultEl.classList.remove('hidden');
+        } catch(e) {
+            errorEl.textContent = 'Failed to generate LNURL: ' + e.message;
+            errorEl.classList.remove('hidden');
+            resultEl.classList.add('hidden');
+        }
+    });
+})();
+"#;
+
 #[derive(Deserialize)]
 pub struct RegisterForm {
     domain: String,
@@ -147,6 +207,14 @@ pub async fn lnaddress_details(
             .build()
     };
 
+    let config_js = format!(
+        "window.LNURL_CONFIG = {{ domain: {}, username: {}, minMsat: {}, maxMsat: {} }};",
+        serde_json::to_string(&domain).unwrap(),
+        serde_json::to_string(&username).unwrap(),
+        manifest.min_sendable,
+        manifest.max_sendable,
+    );
+
     let markup = html! {
         (DOCTYPE)
         html lang="en" {
@@ -170,10 +238,37 @@ pub async fn lnaddress_details(
                         p class="mb-2" { b { "Manifest:" } }
                         pre class="bg-gray-100 rounded p-2 text-xs overflow-x-auto" { (manifest_str) }
                     }
+                    hr class="my-6 border-gray-300" {}
+                    h2 class="text-2xl font-bold mb-4 text-gray-900" { "Generate Fixed-Amount LNURL" }
+                    div class="mb-4" {
+                        label for="amount-sats" class="block mb-2 text-sm font-medium text-gray-900" {
+                            "Amount (sats) \u{2014} range: "
+                            span id="range-display" {}
+                        }
+                        div class="flex space-x-2" {
+                            input type="number" id="amount-sats"
+                                class="block w-full p-2.5 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 focus:ring-blue-500 focus:border-blue-500"
+                                placeholder="Amount in sats" {}
+                            button type="button" id="generate-btn"
+                                class="text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:outline-none focus:ring-blue-300 font-medium rounded-lg text-sm px-5 py-2.5 whitespace-nowrap"
+                                { "Generate" }
+                        }
+                        p id="amount-error" class="mt-1 text-sm text-red-600 hidden" {}
+                    }
+                    div id="lnurl-result" class="hidden mb-4" {
+                        p class="mb-2" { b { "LNURL:" } }
+                        div class="bg-gray-100 rounded p-2 mb-2" {
+                            p id="lnurl-text" class="break-all font-mono text-xs select-all" {}
+                        }
+                        div id="lnurl-qr" class="flex justify-center mb-2" {}
+                    }
                     div class="text-center" {
                         a href="/" class="inline-block text-blue-600 hover:underline font-medium text-lg" { "Back to Register" }
                     }
                 }
+                script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js" {}
+                script { (maud::PreEscaped(&config_js)) }
+                script { (maud::PreEscaped(LNURL_GENERATOR_JS)) }
             }
         }
     };
