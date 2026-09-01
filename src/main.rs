@@ -44,6 +44,8 @@ async fn main() -> Result<()> {
         Some(Operation::ImportPostgres {
             database_url,
             dry_run,
+            skip_empty_usernames,
+            prefer_newest_duplicates,
         }) => {
             use lnaddrd::{
                 crypto::RootSecret,
@@ -61,7 +63,11 @@ async fn main() -> Result<()> {
                 keys,
                 publisher,
                 &config.domains,
-                *dry_run,
+                lnaddrd::import_postgres::ImportOptions {
+                    dry_run: *dry_run,
+                    skip_empty_usernames: *skip_empty_usernames,
+                    prefer_newest_duplicates: *prefer_newest_duplicates,
+                },
             )
             .await?;
             println!("{}", serde_json::to_string_pretty(&report)?);

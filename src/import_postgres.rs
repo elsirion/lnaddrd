@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -36,8 +36,17 @@ pub struct ImportReport {
     pub schema: u16,
     pub imported: usize,
     pub skipped_existing: usize,
+    pub skipped_invalid: usize,
+    pub superseded_duplicates: usize,
     pub event_ids: Vec<String>,
     pub completed_at: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ImportOptions {
+    pub dry_run: bool,
+    pub skip_empty_usernames: bool,
+    pub prefer_newest_duplicates: bool,
 }
 
 pub async fn import(
@@ -46,7 +55,7 @@ pub async fn import(
     keys: Arc<ServiceKeys>,
     publisher: Publisher,
     configured_domains: &[String],
-    dry_run: bool,
+    options: ImportOptions,
 ) -> Result<Event> {
     ensure!(
         repository.metadata("initialized").await?.as_deref() == Some("true"),
@@ -68,37 +77,56 @@ pub async fn import(
         "SELECT username, domain, lnurl, authentication_token, EXTRACT(EPOCH FROM created_at)::BIGINT, EXTRACT(EPOCH FROM updated_at)::BIGINT FROM payment_addresses ORDER BY domain, username",
         &[],
     ).await.context("Could not read legacy payment_addresses")?;
-    let mut parsed = Vec::with_capacity(rows.len());
-    let mut unique = BTreeSet::new();
+    let mut parsed = BTreeMap::<String, LegacyRow>::new();
+    let mut skipped_invalid = 0;
+    let mut superseded_duplicates = 0;
     for row in rows {
-        let username = row.get::<_, String>(0).parse::<Username>()?;
+        let raw_username = row.get::<_, String>(0);
+        if raw_username.is_empty() && options.skip_empty_usernames {
+            skipped_invalid += 1;
+            continue;
+        }
+        let username = raw_username.parse::<Username>()?;
         let domain = row.get::<_, String>(1).parse::<Domain>()?;
         ensure!(
             allowed.contains(&domain),
             "Legacy address uses unconfigured domain: {domain}"
         );
         let address = LightningAddress { username, domain };
-        ensure!(
-            unique.insert(address.to_string()),
-            "Duplicate canonical legacy address: {address}"
-        );
-        parsed.push(LegacyRow {
+        let candidate = LegacyRow {
             address,
             destination: row.get::<_, String>(2).parse()?,
             token: row.get(3),
             created_at: u64::try_from(row.get::<_, i64>(4))?,
             updated_at: u64::try_from(row.get::<_, i64>(5))?,
-        });
+        };
+        let key = candidate.address.to_string();
+        if let Some(existing) = parsed.get(&key) {
+            ensure!(
+                options.prefer_newest_duplicates,
+                "Duplicate canonical legacy address: {}",
+                candidate.address
+            );
+            superseded_duplicates += 1;
+            if (candidate.updated_at, candidate.created_at)
+                <= (existing.updated_at, existing.created_at)
+            {
+                continue;
+            }
+        }
+        parsed.insert(key, candidate);
     }
 
     let mut report = ImportReport {
         schema: 1,
         imported: 0,
         skipped_existing: 0,
+        skipped_invalid,
+        superseded_duplicates,
         event_ids: Vec::new(),
         completed_at: unix_now()?,
     };
-    for row in parsed {
+    for row in parsed.into_values() {
         if let Some(existing) = repository
             .get_address_for_management(row.address.domain.as_str(), row.address.username.as_str())
             .await?
@@ -126,7 +154,7 @@ pub async fn import(
                     .await?
                     .context("Staged import event is missing")?;
                 report.event_ids.push(event_id.clone());
-                if !dry_run {
+                if !options.dry_run {
                     let publication = publisher.publish(&event).await?;
                     repository
                         .record_publication(&event_id, &publication)
@@ -155,7 +183,7 @@ pub async fn import(
         let event = BackupCodec::new(&keys).encode_address(&record)?;
         report.event_ids.push(event.id.to_string());
         report.imported += 1;
-        if dry_run {
+        if options.dry_run {
             continue;
         }
         repository

@@ -245,6 +245,11 @@ cargo run --features postgres-import -- \
   import-postgres --database-url "$LNADDRD_DATABASE_URL" --dry-run
 ```
 
+Legacy installations with invalid empty usernames or case-colliding names may
+opt in to `--skip-empty-usernames` and `--prefer-newest-duplicates`. The latter
+selects the greatest `updated_at` (then `created_at`) and reports every skipped
+or superseded row in the signed import report.
+
 The importer reads but never mutates PostgreSQL, validates every row before
 writing, hashes legacy management tokens with Argon2id, waits for relay
 acknowledgement, and prints a signed redacted report. Keep PostgreSQL untouched

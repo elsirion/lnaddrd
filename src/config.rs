@@ -87,5 +87,11 @@ pub enum Operation {
         /// Validate and report without writing or publishing
         #[arg(long)]
         dry_run: bool,
+        /// Skip legacy rows whose username is empty (not a valid Lightning Address)
+        #[arg(long)]
+        skip_empty_usernames: bool,
+        /// For case-colliding names, import the row with the newest updated_at
+        #[arg(long)]
+        prefer_newest_duplicates: bool,
     },
 }
