@@ -55,6 +55,23 @@
           buildInputs = [];
         };
 
+        packages.postgres-import = craneLib.buildPackage {
+          pname = "lnaddrd-postgres-import";
+          version = "0.1.0";
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              (craneLib.fileset.commonCargoSources ./.)
+              ./migrations
+              ./assets
+            ];
+          };
+          cargoLock = ./Cargo.lock;
+          cargoExtraArgs = "--features postgres-import";
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [];
+        };
+
         nixosModules.lnaddrd = { config, lib, pkgs, system, ... }: with lib; {
           options.services.lnaddrd = {
             enable = mkOption {
