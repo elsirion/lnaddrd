@@ -1,10 +1,11 @@
-pub mod pg;
+pub mod sqlite;
 
-use std::{fmt::Display, str::FromStr, sync::Arc, time::SystemTime};
+use std::{sync::Arc, time::SystemTime};
 
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+
+pub use crate::domain::Destination as DestinationPaymentAddress;
 
 pub type PaymentAddressRepository = Arc<dyn IPaymentAddressRepository + Send + Sync>;
 
@@ -40,54 +41,4 @@ pub struct PaymentAddress {
     pub authentication_token: String,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "type")]
-pub enum DestinationPaymentAddress {
-    Lnurl(lnurl::lnurl::LnUrl),
-    LnAddress {
-        user: String,
-        domain: String
-    },
-}
-
-impl DestinationPaymentAddress {
-    pub fn url(&self) -> String {
-        match self {
-            DestinationPaymentAddress::Lnurl(lnurl) => lnurl.url.clone(),
-            DestinationPaymentAddress::LnAddress { user, domain } => format!("https://{domain}/.well-known/lnurlp/{user}"),
-        }
-    }
-}
-
-impl Display for DestinationPaymentAddress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DestinationPaymentAddress::Lnurl(lnurl) => write!(f, "{}", lnurl),
-            DestinationPaymentAddress::LnAddress { user, domain } => write!(f, "{}@{}", user, domain),
-        }
-    }
-}
-
-impl FromStr for DestinationPaymentAddress {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Ok(lnurl) = lnurl::lnurl::LnUrl::decode(s.to_owned()) {
-            Ok(DestinationPaymentAddress::Lnurl(lnurl))
-        } else {
-            let parts: Vec<&str> = s.split('@').collect();
-
-            ensure!(
-                parts.len() == 2,
-                "Invalid destination payment address, neither lnurl nor lnaddress"
-            );
-
-            Ok(DestinationPaymentAddress::LnAddress {
-                user: parts[0].to_string(),
-                domain: parts[1].to_string(),
-            })
-        }
-    }
 }

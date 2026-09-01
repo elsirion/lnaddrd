@@ -1,27 +1,20 @@
 services:
-  db:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: lnaddrd
-      POSTGRES_USER: lnaddrd
-      POSTGRES_PASSWORD: lnaddrd
-    volumes:
-      - db-data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-
   lnaddrd:
     image: ghcr.io/elsirion/lnaddrd:latest
-    depends_on:
-      - db
     environment:
       LNADDRD_DOMAINS: "localhost"
       LNADDRD_BIND: "0.0.0.0:8080"
-      LNADDRD_DATABASE_URL: "postgres://lnaddrd:lnaddrd@db:5432/lnaddrd"
+      LNADDRD_DATABASE_PATH: "/var/lib/lnaddrd/lnaddrd.sqlite3"
+      LNADDRD_ROOT_SECRET_FILE: "/var/lib/lnaddrd/root-secret"
+      LNADDRD_ADMIN_PASSWORD_FILE: "/var/lib/lnaddrd/admin-password"
+      LNADDRD_NOSTR_RELAYS: "wss://relay.example.com"
+      LNADDRD_PUBLIC_BASE_URL: "https://localhost"
+      LNADDRD_SERVICE_NAME: "Local lnaddrd"
+    volumes:
+      - lnaddrd-data:/var/lib/lnaddrd
     ports:
       - "8080:8080"
     restart: unless-stopped
 
 volumes:
-  db-data:
+  lnaddrd-data:

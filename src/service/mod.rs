@@ -21,7 +21,11 @@ pub trait ILnaddrService {
         username: &str,
     ) -> Result<Option<PayResponse>>;
 
-    async fn get_destination(&self, domain: &str, username: &str) -> Result<Option<DestinationPaymentAddress>>;
+    async fn get_destination(
+        &self,
+        domain: &str,
+        username: &str,
+    ) -> Result<Option<DestinationPaymentAddress>>;
 
     async fn register_lnaddr(
         &self,
@@ -36,10 +40,19 @@ pub trait ILnaddrService {
         username: &str,
         authentication_token: &str,
     ) -> Result<()>;
+
+    async fn update_lnaddr(
+        &self,
+        domain: &str,
+        username: &str,
+        destination: &str,
+        authentication_token: &str,
+    ) -> Result<bool>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterResponse {
     pub lnaddr: String,
     pub authentication_token: String,
+    pub active: bool,
 }

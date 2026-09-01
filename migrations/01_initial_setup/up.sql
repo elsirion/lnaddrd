@@ -1,12 +1,12 @@
 -- payment_addresses table
 CREATE TABLE IF NOT EXISTS payment_addresses (
-    id SERIAL PRIMARY KEY,
-    username VARCHAR(255) NOT NULL,
-    domain VARCHAR(255) NOT NULL,
-    lnurl TEXT NOT NULL,
-    authentication_token VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    authentication_token TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
     UNIQUE (username, domain)
 );
 

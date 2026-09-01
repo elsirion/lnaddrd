@@ -29,8 +29,8 @@
             clippy
             rust-analyzer
             just
-            postgresql
-            diesel-cli
+            sqlite
+            (diesel-cli.override { postgresqlSupport = false; sqliteSupport = true; })
           ];
 
           shellHook = ''
@@ -47,11 +47,12 @@
             fileset = pkgs.lib.fileset.unions [
               (craneLib.fileset.commonCargoSources ./.)
               ./migrations
+              ./assets
             ];
           };
           cargoLock = ./Cargo.lock;
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.libpq ];
+          buildInputs = [];
         };
 
         nixosModules.lnaddrd = { config, lib, pkgs, system, ... }: with lib; {
@@ -73,10 +74,25 @@
               default = "127.0.0.1:8080";
               description = "The address to bind the server to.";
             };
-            database = mkOption {
+            databasePath = mkOption {
               type = types.str;
-              default = "postgres://localhost:5432/lnaddrd";
-              description = "The database URL.";
+              default = "/var/lib/lnaddrd/lnaddrd.sqlite3";
+              description = "Path to the SQLite database.";
+            };
+            nostrRelays = mkOption {
+              type = with types; listOf str;
+              default = [];
+              description = "Nostr relays used for encrypted state backup.";
+            };
+            publicBaseUrl = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              description = "Canonical public HTTPS origin used for service announcements.";
+            };
+            serviceName = mkOption {
+              type = types.str;
+              default = "lnaddrd";
+              description = "Human-readable service announcement name.";
             };
             package = mkOption {
               type = types.nullOr types.package;
@@ -102,12 +118,19 @@
 
             systemd.services.lnaddrd = {
               description = "lnaddrd Lightning Address Service";
-              after = [ "network.target" "postgresql.service" ];
+              after = [ "network.target" ];
               wantedBy = [ "multi-user.target" ];
               environment = {
                 LNADDRD_DOMAINS = concatStringsSep "," config.services.lnaddrd.domains;
                 LNADDRD_BIND = config.services.lnaddrd.bind;
-                LNADDRD_DATABASE_URL = config.services.lnaddrd.database;
+                LNADDRD_DATABASE_PATH = config.services.lnaddrd.databasePath;
+                LNADDRD_ROOT_SECRET_FILE = "/var/lib/lnaddrd/root-secret";
+                LNADDRD_ADMIN_PASSWORD_FILE = "/var/lib/lnaddrd/admin-password";
+                LNADDRD_NOSTR_RELAYS = concatStringsSep "," config.services.lnaddrd.nostrRelays;
+                LNADDRD_SERVICE_NAME = config.services.lnaddrd.serviceName;
+              } // optionalAttrs (config.services.lnaddrd.publicBaseUrl != null) {
+                LNADDRD_PUBLIC_BASE_URL = config.services.lnaddrd.publicBaseUrl;
+              } // optionalAttrs (config.services.lnaddrd.warning != null) {
                 LNADDRD_WARNING = config.services.lnaddrd.warning;
               };
               serviceConfig = {
@@ -115,6 +138,8 @@
                 Restart = "on-failure";
                 User = "lnaddrd";
                 Group = "lnaddrd";
+                StateDirectory = "lnaddrd";
+                StateDirectoryMode = "0700";
               };
             };
           };
