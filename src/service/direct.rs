@@ -82,10 +82,13 @@ impl ILnaddrService for DirectLnaddrService {
         };
 
         let destination_url = lnaddr_entry.destination.url();
-        let response = match self
+        let response_json = self
             .client
-            .get_json(&destination_url)
+            .get_json::<serde_json::Value>(&destination_url)
             .await
+            .and_then(|json| {
+                lnurl::decode_ln_url_response_from_json(json).map_err(anyhow::Error::from)
+            })
             .map_err(|error| {
                 tracing::warn!(
                     domain = %domain,
@@ -98,7 +101,8 @@ impl ILnaddrService for DirectLnaddrService {
                     "Failed to fetch backing LNURL manifest"
                 );
                 error
-            })? {
+            })?;
+        let response = match response_json {
             LnUrlResponse::LnUrlPayResponse(response) => response,
             LnUrlResponse::LnUrlWithdrawResponse(_) => bail!("Invalid LNURL type: LNURLwithdraw"),
             LnUrlResponse::LnUrlChannelResponse(_) => bail!("Invalid LNURL type: LNURLchannel"),
