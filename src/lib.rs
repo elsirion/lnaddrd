@@ -5,9 +5,10 @@ use admin::{
 };
 use anyhow::Result;
 use api::{
-    generate_lnurl_handler, get_lnaddr_handler, get_lnaddr_manifest_handler, htmx_asset_handler,
-    list_domains_handler, liveness_handler, readiness_handler, register_lnaddr_handler,
-    remove_lnaddr_handler, update_lnaddr_handler, well_known_announcement_handler,
+    flowbite_css_asset_handler, flowbite_js_asset_handler, generate_lnurl_handler,
+    get_lnaddr_handler, get_lnaddr_manifest_handler, htmx_asset_handler, list_domains_handler,
+    liveness_handler, readiness_handler, register_lnaddr_handler, remove_lnaddr_handler,
+    tailwind_asset_handler, update_lnaddr_handler, well_known_announcement_handler,
 };
 use axum::{
     Router,
@@ -159,6 +160,15 @@ async fn normal_router(
         .route("/health/live", get(liveness_handler))
         .route("/health/ready", get(readiness_handler))
         .route("/assets/htmx-4.0.0.min.js", get(htmx_asset_handler))
+        .route("/assets/tailwindcss-3.4.17.js", get(tailwind_asset_handler))
+        .route(
+            "/assets/flowbite-1.7.0.min.css",
+            get(flowbite_css_asset_handler),
+        )
+        .route(
+            "/assets/flowbite-1.7.0.min.js",
+            get(flowbite_js_asset_handler),
+        )
         .route(
             "/.well-known/lnaddrd.json",
             get(well_known_announcement_handler),

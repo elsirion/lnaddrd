@@ -13,6 +13,9 @@ use crate::nostr::announcement::well_known;
 use crate::service::RegisterResponse;
 
 const HTMX_JS: &str = include_str!("../assets/htmx-4.0.0.min.js");
+const TAILWIND_JS: &str = include_str!("../assets/tailwindcss-3.4.17.js");
+const FLOWBITE_CSS: &str = include_str!("../assets/flowbite-1.7.0.min.css");
+const FLOWBITE_JS: &str = include_str!("../assets/flowbite-1.7.0.min.js");
 
 pub async fn htmx_asset_handler() -> impl axum::response::IntoResponse {
     (
@@ -21,6 +24,33 @@ pub async fn htmx_asset_handler() -> impl axum::response::IntoResponse {
             "text/javascript; charset=utf-8",
         )],
         HTMX_JS,
+    )
+}
+
+pub async fn tailwind_asset_handler() -> impl axum::response::IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/javascript; charset=utf-8",
+        )],
+        TAILWIND_JS,
+    )
+}
+
+pub async fn flowbite_css_asset_handler() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        FLOWBITE_CSS,
+    )
+}
+
+pub async fn flowbite_js_asset_handler() -> impl axum::response::IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/javascript; charset=utf-8",
+        )],
+        FLOWBITE_JS,
     )
 }
 

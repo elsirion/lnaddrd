@@ -235,8 +235,10 @@ fn common_head(title: &str) -> Markup {
             meta charset="UTF-8";
             meta name="viewport" content="width=device-width, initial-scale=1.0";
             title { (title) }
+            link rel="stylesheet" href="/assets/flowbite-1.7.0.min.css";
+            script src="/assets/tailwindcss-3.4.17.js" {}
+            script src="/assets/flowbite-1.7.0.min.js" {}
             script src="/assets/htmx-4.0.0.min.js" {}
-            style { "body{font-family:system-ui,sans-serif;max-width:48rem;margin:3rem auto;padding:0 1rem}input,select,textarea,button{font:inherit;padding:.55rem;margin:.3rem 0;max-width:100%;box-sizing:border-box}label{display:block;margin-top:.8rem}pre,code{overflow-wrap:anywhere}button{cursor:pointer}" }
         }
     }
 }
