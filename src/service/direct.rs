@@ -81,11 +81,24 @@ impl ILnaddrService for DirectLnaddrService {
             return Ok(None);
         };
 
+        let destination_url = lnaddr_entry.destination.url();
         let response = match self
             .client
-            .get_json(&lnaddr_entry.destination.url())
-            .await?
-        {
+            .get_json(&destination_url)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    domain = %domain,
+                    username = %username,
+                    destination_host = url::Url::parse(&destination_url)
+                        .ok()
+                        .and_then(|url| url.host_str().map(str::to_owned))
+                        .unwrap_or_else(|| "invalid".to_owned()),
+                    %error,
+                    "Failed to fetch backing LNURL manifest"
+                );
+                error
+            })? {
             LnUrlResponse::LnUrlPayResponse(response) => response,
             LnUrlResponse::LnUrlWithdrawResponse(_) => bail!("Invalid LNURL type: LNURLwithdraw"),
             LnUrlResponse::LnUrlChannelResponse(_) => bail!("Invalid LNURL type: LNURLchannel"),
