@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
             dry_run,
             skip_empty_usernames,
             prefer_newest_duplicates,
+            canonicalize_usernames,
         }) => {
             use lnaddrd::{
                 crypto::RootSecret,
@@ -67,6 +68,7 @@ async fn main() -> Result<()> {
                     dry_run: *dry_run,
                     skip_empty_usernames: *skip_empty_usernames,
                     prefer_newest_duplicates: *prefer_newest_duplicates,
+                    canonicalize_usernames: *canonicalize_usernames,
                 },
             )
             .await?;

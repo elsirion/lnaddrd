@@ -93,5 +93,8 @@ pub enum Operation {
         /// For case-colliding names, import the row with the newest updated_at
         #[arg(long)]
         prefer_newest_duplicates: bool,
+        /// Lowercase, trim, and replace legacy username whitespace with '-'
+        #[arg(long)]
+        canonicalize_usernames: bool,
     },
 }

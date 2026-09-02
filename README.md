@@ -249,6 +249,9 @@ Legacy installations with invalid empty usernames or case-colliding names may
 opt in to `--skip-empty-usernames` and `--prefer-newest-duplicates`. The latter
 selects the greatest `updated_at` (then `created_at`) and reports every skipped
 or superseded row in the signed import report.
+`--canonicalize-usernames` explicitly lowercases, trims, and replaces runs of
+legacy username whitespace with `-`; every changed username is also counted in
+the report.
 
 The importer reads but never mutates PostgreSQL, validates every row before
 writing, hashes legacy management tokens with Argon2id, waits for relay

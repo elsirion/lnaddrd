@@ -38,6 +38,7 @@ pub struct ImportReport {
     pub skipped_existing: usize,
     pub skipped_invalid: usize,
     pub superseded_duplicates: usize,
+    pub canonicalized_usernames: usize,
     pub event_ids: Vec<String>,
     pub completed_at: u64,
 }
@@ -47,6 +48,7 @@ pub struct ImportOptions {
     pub dry_run: bool,
     pub skip_empty_usernames: bool,
     pub prefer_newest_duplicates: bool,
+    pub canonicalize_usernames: bool,
 }
 
 pub async fn import(
@@ -80,13 +82,26 @@ pub async fn import(
     let mut parsed = BTreeMap::<String, LegacyRow>::new();
     let mut skipped_invalid = 0;
     let mut superseded_duplicates = 0;
+    let mut canonicalized_usernames = 0;
     for row in rows {
         let raw_username = row.get::<_, String>(0);
         if raw_username.is_empty() && options.skip_empty_usernames {
             skipped_invalid += 1;
             continue;
         }
-        let username = raw_username.parse::<Username>()?;
+        let canonical_username = if options.canonicalize_usernames {
+            raw_username
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join("-")
+                .to_ascii_lowercase()
+        } else {
+            raw_username.clone()
+        };
+        if canonical_username != raw_username {
+            canonicalized_usernames += 1;
+        }
+        let username = canonical_username.parse::<Username>()?;
         let domain = row.get::<_, String>(1).parse::<Domain>()?;
         ensure!(
             allowed.contains(&domain),
@@ -123,6 +138,7 @@ pub async fn import(
         skipped_existing: 0,
         skipped_invalid,
         superseded_duplicates,
+        canonicalized_usernames,
         event_ids: Vec::new(),
         completed_at: unix_now()?,
     };
