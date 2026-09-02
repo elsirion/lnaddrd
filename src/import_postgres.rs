@@ -39,6 +39,7 @@ pub struct ImportReport {
     pub skipped_invalid: usize,
     pub superseded_duplicates: usize,
     pub canonicalized_usernames: usize,
+    pub canonicalized_destinations: usize,
     pub event_ids: Vec<String>,
     pub completed_at: u64,
 }
@@ -83,6 +84,7 @@ pub async fn import(
     let mut skipped_invalid = 0;
     let mut superseded_duplicates = 0;
     let mut canonicalized_usernames = 0;
+    let mut canonicalized_destinations = 0;
     for row in rows {
         let raw_username = row.get::<_, String>(0);
         if raw_username.is_empty() && options.skip_empty_usernames {
@@ -90,27 +92,29 @@ pub async fn import(
             continue;
         }
         let canonical_username = if options.canonicalize_usernames {
-            raw_username
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join("-")
-                .to_ascii_lowercase()
+            canonicalize_username(&raw_username)
         } else {
             raw_username.clone()
         };
         if canonical_username != raw_username {
             canonicalized_usernames += 1;
         }
-        let username = canonical_username.parse::<Username>()?;
+        let username = canonical_username
+            .parse::<Username>()
+            .with_context(|| format!("Invalid legacy username: {raw_username:?}"))?;
         let domain = row.get::<_, String>(1).parse::<Domain>()?;
         ensure!(
             allowed.contains(&domain),
             "Legacy address uses unconfigured domain: {domain}"
         );
         let address = LightningAddress { username, domain };
+        let raw_destination = row.get::<_, String>(2);
+        let (destination, destination_changed) =
+            parse_legacy_destination(&raw_destination, options.canonicalize_usernames)?;
+        canonicalized_destinations += usize::from(destination_changed);
         let candidate = LegacyRow {
             address,
-            destination: row.get::<_, String>(2).parse()?,
+            destination,
             token: row.get(3),
             created_at: u64::try_from(row.get::<_, i64>(4))?,
             updated_at: u64::try_from(row.get::<_, i64>(5))?,
@@ -139,6 +143,7 @@ pub async fn import(
         skipped_invalid,
         superseded_duplicates,
         canonicalized_usernames,
+        canonicalized_destinations,
         event_ids: Vec::new(),
         completed_at: unix_now()?,
     };
@@ -229,6 +234,33 @@ pub async fn import(
         }
     }
     sign_report(&report, &keys)
+}
+
+fn canonicalize_username(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_ascii_lowercase()
+}
+
+fn parse_legacy_destination(value: &str, canonicalize: bool) -> Result<(Destination, bool)> {
+    if let Ok(destination) = value.parse::<Destination>() {
+        return Ok((destination, false));
+    }
+    if canonicalize {
+        if let Some((username, domain)) = value.split_once('@') {
+            ensure!(!domain.contains('@'), "Invalid legacy destination");
+            let canonical = format!("{}@{}", canonicalize_username(username), domain);
+            return Ok((
+                canonical
+                    .parse::<Destination>()
+                    .context("Invalid canonicalized legacy Lightning Address destination")?,
+                canonical != value,
+            ));
+        }
+    }
+    anyhow::bail!("Invalid legacy destination: expected LNURL or Lightning Address")
 }
 
 fn sign_report(report: &ImportReport, keys: &ServiceKeys) -> Result<Event> {
