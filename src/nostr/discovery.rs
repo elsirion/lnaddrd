@@ -205,4 +205,31 @@ mod tests {
             .unwrap();
         assert!(verify_well_known(&document, &event));
     }
+
+    #[test]
+    fn announcement_includes_profile_and_new_capabilities() {
+        let (config, mut configuration, keys) = fixture();
+        configuration.profile = Some(crate::nostr::codec::ServiceProfileRecord {
+            about: Some("About us".to_owned()),
+            contact: None,
+            terms_url: Some("https://example.com/terms".to_owned()),
+        });
+        let event = build_event(&config, &configuration, &keys, 1_700_000_000)
+            .unwrap()
+            .unwrap();
+        let announcement: ServiceAnnouncement = serde_json::from_str(&event.content).unwrap();
+        assert_eq!(announcement.about.as_deref(), Some("About us"));
+        assert_eq!(
+            announcement.terms_url.as_deref(),
+            Some("https://example.com/terms")
+        );
+        assert!(
+            announcement
+                .capabilities
+                .iter()
+                .any(|c| c == "registration-api-v1")
+        );
+        assert!(announcement.capabilities.iter().any(|c| c == "nostr-auth"));
+        assert!(validate_event(&event, 1_700_000_001).is_ok());
+    }
 }

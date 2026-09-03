@@ -85,6 +85,11 @@ Allowed initial capabilities are:
 - `management-token`: users can later update/delete with a bearer token.
 - `nostr-recoverable`: active records are backed up using the companion private
   backup record microstandard.
+- `registration-api-v1`: the service exposes the JSON registration API at
+  `<origin>/api/v1` as defined in the registration API microstandard
+  (document 03).
+- `nostr-auth`: the service accepts NIP-98 HTTP authentication for address
+  management as defined in document 03.
 
 ## Discovery
 

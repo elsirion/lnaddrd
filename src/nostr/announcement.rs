@@ -135,6 +135,8 @@ pub fn build_event(
     let mut capabilities = BTreeSet::from([
         "management-token".to_owned(),
         "nostr-recoverable".to_owned(),
+        "registration-api-v1".to_owned(),
+        "nostr-auth".to_owned(),
     ]);
     if has_free {
         capabilities.insert("free-registration".to_owned());
@@ -143,13 +145,20 @@ pub fn build_event(
         capabilities.insert("paid-registration".to_owned());
         capabilities.insert("lud21-gate".to_owned());
     }
+    let profile = service_configuration.profile.clone().unwrap_or(
+        crate::nostr::codec::ServiceProfileRecord {
+            about: None,
+            contact: None,
+            terms_url: None,
+        },
+    );
     let announcement = ServiceAnnouncement {
         schema: 1,
         name: Some(config.service_name.clone()),
-        about: None,
+        about: profile.about,
         registration_url: format!("{origin}/"),
-        terms_url: None,
-        contact: None,
+        terms_url: profile.terms_url,
+        contact: profile.contact,
         origin: origin.clone(),
         domains,
         capabilities: capabilities.into_iter().collect(),
