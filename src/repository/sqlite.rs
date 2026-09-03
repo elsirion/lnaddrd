@@ -742,11 +742,19 @@ impl SqlitePaymentAddressRepository {
                     },
                 );
             }
+            let profile = service_metadata::table
+                .filter(service_metadata::key.eq("service_profile"))
+                .select(service_metadata::value)
+                .first::<String>(&mut connection)
+                .optional()?
+                .map(|json| serde_json::from_str(&json))
+                .transpose()?;
             Ok(crate::nostr::codec::ServiceConfigurationRecord {
                 schema: 1,
                 revision,
                 instance_id,
                 domains,
+                profile,
                 updated_at: u64::try_from(unix_now()?)?,
             })
         })
@@ -1694,6 +1702,26 @@ fn apply_configuration(
         .do_update()
         .set(service_metadata::value.eq(configuration.revision.to_string()))
         .execute(connection)?;
+    match &configuration.profile {
+        Some(profile) => {
+            let json = serde_json::to_string(profile)?;
+            diesel::insert_into(service_metadata::table)
+                .values((
+                    service_metadata::key.eq("service_profile"),
+                    service_metadata::value.eq(&json),
+                ))
+                .on_conflict(service_metadata::key)
+                .do_update()
+                .set(service_metadata::value.eq(&json))
+                .execute(connection)?;
+        }
+        None => {
+            diesel::delete(
+                service_metadata::table.filter(service_metadata::key.eq("service_profile")),
+            )
+            .execute(connection)?;
+        }
+    }
     Ok(())
 }
 

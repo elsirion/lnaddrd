@@ -183,6 +183,7 @@ mod tests {
                 "example.com".parse().unwrap(),
                 DomainConfigurationRecord::default(),
             )]),
+            profile: None,
             updated_at: 1_700_000_000,
         };
         (

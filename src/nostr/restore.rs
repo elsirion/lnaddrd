@@ -78,6 +78,7 @@ pub async fn initialize_empty(
         revision: 1,
         instance_id: hex::encode(instance_id),
         domains,
+        profile: None,
         updated_at: now,
     };
     let event = BackupCodec::new(keys).encode_configuration(&record)?;
@@ -367,6 +368,7 @@ mod tests {
                 "example.com".parse().unwrap(),
                 DomainConfigurationRecord::default(),
             )]),
+            profile: None,
             updated_at: 100,
         };
         let active = AddressRecord::active(

@@ -184,11 +184,48 @@ pub struct DomainConfigurationRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceProfileRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms_url: Option<String>,
+}
+
+impl ServiceProfileRecord {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(about) = &self.about {
+            ensure!(
+                about.chars().count() <= 500,
+                "About must be at most 500 characters"
+            );
+        }
+        if let Some(contact) = &self.contact {
+            use nostr_sdk::prelude::FromBech32;
+            nostr_sdk::prelude::PublicKey::from_bech32(contact)
+                .map_err(|_| anyhow::anyhow!("Contact must be a valid npub"))?;
+        }
+        if let Some(terms_url) = &self.terms_url {
+            let url = url::Url::parse(terms_url).context("Invalid terms URL")?;
+            ensure!(url.scheme() == "https", "Terms URL must use HTTPS");
+        }
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.about.is_none() && self.contact.is_none() && self.terms_url.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceConfigurationRecord {
     pub schema: u16,
     pub revision: u64,
     pub instance_id: String,
     pub domains: BTreeMap<Domain, DomainConfigurationRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ServiceProfileRecord>,
     pub updated_at: u64,
 }
 
@@ -416,6 +453,9 @@ impl<'a> BackupCodec<'a> {
                 }
             }
         }
+        if let Some(profile) = &record.profile {
+            profile.validate()?;
+        }
         Ok(())
     }
 }
@@ -526,6 +566,7 @@ mod tests {
                     reserved_names: vec!["admin".parse().unwrap(), "www".parse().unwrap()],
                 },
             )]),
+            profile: None,
             updated_at: 1_700_000_000,
         };
         let event = codec.encode_configuration(&record).unwrap();
@@ -561,5 +602,59 @@ mod tests {
         let mut record = active_record(&keys);
         record.destination = None;
         assert!(codec.encode_address(&record).is_err());
+    }
+
+    #[test]
+    fn profile_validation_rules() {
+        use super::ServiceProfileRecord;
+        let ok = ServiceProfileRecord {
+            about: Some("Community operator".to_owned()),
+            contact: Some(
+                "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq".to_owned(),
+            ),
+            terms_url: Some("https://example.com/terms".to_owned()),
+        };
+        // contact above is not a valid bech32 npub; build a real one from a fixed key:
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let ok = ServiceProfileRecord {
+            contact: Some(nostr_sdk::prelude::ToBech32::to_bech32(&keys.public_key()).unwrap()),
+            ..ok
+        };
+        ok.validate().unwrap();
+        assert!(
+            ServiceProfileRecord {
+                about: Some("x".repeat(501)),
+                contact: None,
+                terms_url: None
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ServiceProfileRecord {
+                about: None,
+                contact: Some("not-an-npub".to_owned()),
+                terms_url: None
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ServiceProfileRecord {
+                about: None,
+                contact: None,
+                terms_url: Some("http://insecure.example".to_owned())
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn configuration_record_without_profile_still_decodes() {
+        // Old records have no "profile" key; serde default must tolerate that.
+        let json = r#"{"schema":1,"revision":1,"instance_id":"00","domains":{},"updated_at":1}"#;
+        let record: ServiceConfigurationRecord = serde_json::from_str(json).unwrap();
+        assert!(record.profile.is_none());
     }
 }

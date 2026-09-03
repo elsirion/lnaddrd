@@ -1272,6 +1272,7 @@ mod tests {
                     reserved_names: vec![],
                 },
             )]),
+            profile: None,
             updated_at: 1,
         };
         let markup =
