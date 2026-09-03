@@ -471,6 +471,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_nip98_header_does_not_fall_back_to_body_token() {
+        let app = test_router().await;
+
+        let register_response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "domain": "example.com",
+                            "username": "carol",
+                            "destination": "receiver@example.net",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(register_response.status(), StatusCode::OK);
+        let register_body: serde_json::Value = read_json(register_response).await;
+        let token = register_body["management_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let update_body = json!({
+            "domain": "example.com",
+            "username": "carol",
+            "destination": "receiver2@example.net",
+            "authentication_token": token,
+        })
+        .to_string();
+
+        // A present-but-invalid NIP-98 header must never silently fall back to the
+        // (valid) body token: the request must be rejected outright, not authorized
+        // via the token.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::put("/lnaddress/update")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Nostr garbage")
+                    .body(Body::from(update_body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        // Confirms the token itself was valid and the 401 above came specifically
+        // from the bad header, not from some other problem with the request.
+        let response = app
+            .oneshot(
+                Request::put("/lnaddress/update")
+                    .header("content-type", "application/json")
+                    .body(Body::from(update_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn malformed_json_body_is_reported_as_invalid_input() {
         let app = test_router().await;
         let response = app
