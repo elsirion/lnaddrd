@@ -31,6 +31,37 @@ use crate::{
 const ATTEMPT_TTL_SECONDS: i64 = 15 * 60;
 const ATTEMPT_RETENTION_SECONDS: i64 = 24 * 60 * 60;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteRejection {
+    InvalidInput,
+    UnsupportedDomain,
+    Taken,
+    Reserved,
+    LengthDisabled,
+}
+
+impl QuoteRejection {
+    pub fn code(&self) -> &'static str {
+        match self {
+            QuoteRejection::InvalidInput => "invalid_input",
+            QuoteRejection::UnsupportedDomain => "unsupported_domain",
+            QuoteRejection::Taken => "taken",
+            QuoteRejection::Reserved => "reserved",
+            QuoteRejection::LengthDisabled => "length_disabled",
+        }
+    }
+
+    pub fn message(&self) -> &'static str {
+        match self {
+            QuoteRejection::InvalidInput => "Invalid domain or username",
+            QuoteRejection::UnsupportedDomain => "Unsupported domain",
+            QuoteRejection::Taken => "Address is already registered or reserved",
+            QuoteRejection::Reserved => "Reserved username",
+            QuoteRejection::LengthDisabled => "Registration is disabled for this username length",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Quote {
     Free,
@@ -104,36 +135,51 @@ impl RegistrationManager {
         true
     }
 
-    pub async fn quote(&self, domain: &str, username: &str) -> Result<Quote> {
+    pub async fn quote_checked(
+        &self,
+        domain: &str,
+        username: &str,
+    ) -> Result<Result<u64, QuoteRejection>> {
         self.prune_attempts().await?;
-        let domain = domain.parse::<Domain>()?;
-        let username = username.parse::<Username>()?;
-        ensure!(self.domains.contains(&domain), "Unsupported domain");
-        ensure!(
-            !self
-                .repository
-                .address_is_claimed(domain.as_str(), username.as_str())
-                .await?,
-            "Address is already registered or reserved"
-        );
-        ensure!(
-            !self
-                .repository
-                .is_reserved(domain.as_str(), username.as_str())
-                .await?,
-            "Reserved username"
-        );
+        let Ok(domain) = domain.parse::<Domain>() else {
+            return Ok(Err(QuoteRejection::InvalidInput));
+        };
+        let Ok(username) = username.parse::<Username>() else {
+            return Ok(Err(QuoteRejection::InvalidInput));
+        };
+        if !self.domains.contains(&domain) {
+            return Ok(Err(QuoteRejection::UnsupportedDomain));
+        }
+        if self
+            .repository
+            .address_is_claimed(domain.as_str(), username.as_str())
+            .await?
+        {
+            return Ok(Err(QuoteRejection::Taken));
+        }
+        if self
+            .repository
+            .is_reserved(domain.as_str(), username.as_str())
+            .await?
+        {
+            return Ok(Err(QuoteRejection::Reserved));
+        }
         let configuration = self.repository.service_configuration(&self.domains).await?;
         let Some(policy) = &configuration.domains[&domain].payment_policy else {
-            return Ok(Quote::Free);
+            return Ok(Ok(0));
         };
-        let price = policy_price(policy, username.as_str().len())
-            .context("Registration is disabled for this username length")?;
-        Ok(if price == 0 {
-            Quote::Free
-        } else {
-            Quote::Paid(price)
-        })
+        match policy_price(policy, username.as_str().len()) {
+            Some(price) => Ok(Ok(price)),
+            None => Ok(Err(QuoteRejection::LengthDisabled)),
+        }
+    }
+
+    pub async fn quote(&self, domain: &str, username: &str) -> Result<Quote> {
+        match self.quote_checked(domain, username).await? {
+            Ok(0) => Ok(Quote::Free),
+            Ok(price) => Ok(Quote::Paid(price)),
+            Err(rejection) => bail!("{}", rejection.message()),
+        }
     }
 
     pub async fn start(
@@ -344,4 +390,73 @@ fn unix_now() -> Result<i64> {
     Ok(i64::try_from(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        crypto::RootSecret,
+        nostr::publisher::{EventPublisher, Publication},
+    };
+    use async_trait::async_trait;
+    use nostr_sdk::prelude::Event;
+
+    struct FixturePublisher;
+
+    #[async_trait]
+    impl EventPublisher for FixturePublisher {
+        async fn publish(&self, _event: &Event) -> Result<Publication> {
+            Ok(Publication {
+                accepted_by: Vec::new(),
+                failed: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn quote_checked_reports_structured_rejections() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = SqlitePaymentAddressRepository::new(
+            directory.path().join("db.sqlite3").to_str().unwrap(),
+        )
+        .unwrap();
+        repository
+            .set_metadata("instance_id", &"01".repeat(32))
+            .await
+            .unwrap();
+        repository
+            .set_metadata("configuration_revision", "1")
+            .await
+            .unwrap();
+        let keys = Arc::new(RootSecret::from_bytes([0x42; 32]).derive().unwrap());
+        let manager = RegistrationManager::new(
+            repository,
+            &["example.com".to_owned()],
+            keys,
+            Arc::new(FixturePublisher),
+        )
+        .unwrap();
+
+        // Free domain should work
+        assert!(matches!(
+            manager.quote_checked("example.com", "alice").await.unwrap(),
+            Ok(0)
+        ));
+
+        // Unsupported domain should fail
+        assert!(matches!(
+            manager.quote_checked("other.com", "alice").await.unwrap(),
+            Err(QuoteRejection::UnsupportedDomain)
+        ));
+
+        // Invalid username (with spaces) should fail
+        assert!(matches!(
+            manager
+                .quote_checked("example.com", "no spaces!")
+                .await
+                .unwrap(),
+            Err(QuoteRejection::InvalidInput)
+        ));
+    }
 }
