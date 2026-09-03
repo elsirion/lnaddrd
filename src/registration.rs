@@ -175,6 +175,8 @@ impl RegistrationManager {
     }
 
     pub async fn quote(&self, domain: &str, username: &str) -> Result<Quote> {
+        domain.parse::<Domain>()?;
+        username.parse::<Username>()?;
         match self.quote_checked(domain, username).await? {
             Ok(0) => Ok(Quote::Free),
             Ok(price) => Ok(Quote::Paid(price)),
@@ -458,5 +460,44 @@ mod tests {
                 .unwrap(),
             Err(QuoteRejection::InvalidInput)
         ));
+    }
+
+    #[tokio::test]
+    async fn quote_preserves_specific_parse_errors() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = SqlitePaymentAddressRepository::new(
+            directory.path().join("db.sqlite3").to_str().unwrap(),
+        )
+        .unwrap();
+        repository
+            .set_metadata("instance_id", &"01".repeat(32))
+            .await
+            .unwrap();
+        repository
+            .set_metadata("configuration_revision", "1")
+            .await
+            .unwrap();
+        let keys = Arc::new(RootSecret::from_bytes([0x42; 32]).derive().unwrap());
+        let manager = RegistrationManager::new(
+            repository,
+            &["example.com".to_owned()],
+            keys,
+            Arc::new(FixturePublisher),
+        )
+        .unwrap();
+
+        // quote() should return specific Username parse error, not generic "Invalid domain or username"
+        let error = manager.quote("example.com", "NO CAPS!").await.unwrap_err();
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("Username"),
+            "Expected specific Username parse error, got: {}",
+            error_msg
+        );
+        assert!(
+            !error_msg.contains("Invalid domain or username"),
+            "Should not return generic InvalidInput message, got: {}",
+            error_msg
+        );
     }
 }
