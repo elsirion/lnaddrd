@@ -1,5 +1,3 @@
-import { DEFAULT_RELAYS } from './config.js';
-
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {

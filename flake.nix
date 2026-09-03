@@ -30,6 +30,7 @@
             rust-analyzer
             just
             sqlite
+            python3
             (diesel-cli.override { postgresqlSupport = false; sqliteSupport = true; })
           ];
 
