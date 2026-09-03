@@ -214,13 +214,7 @@ mod tests {
     use crate::service::direct::DirectLnaddrService;
     use anyhow::Result as AnyResult;
     use async_trait::async_trait;
-    use axum::{
-        Router,
-        body::Body,
-        extract::connect_info::MockConnectInfo,
-        http::Request,
-        routing::{get, post},
-    };
+    use axum::{Router, body::Body, extract::connect_info::MockConnectInfo, http::Request};
     use nostr_sdk::prelude::Event;
     use std::net::SocketAddr;
     use tower::util::ServiceExt;
@@ -285,13 +279,12 @@ mod tests {
         // temp files are only needed for the duration of the test process.
         std::mem::forget(directory);
 
-        Router::new()
-            .route("/api/v1/register/quote", get(quote_v1))
-            .route("/api/v1/register", post(register_v1))
-            .route("/api/v1/register/start", post(register_start_v1))
-            .route("/api/v1/register/:id", get(register_status_v1))
-            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1337))))
-            .with_state(state)
+        // Built via the same `crate::build_router` helper the real server uses (see
+        // `normal_router` in `lib.rs`), so the public/private route split and the CORS
+        // layer under test in `cors_allows_public_api_and_not_admin` are the exact
+        // production wiring, not a hand-rolled approximation of it.
+        let router: Router = crate::build_router(state);
+        router.layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1337))))
     }
 
     async fn read_json(response: Response) -> serde_json::Value {
@@ -411,6 +404,56 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body: serde_json::Value = read_json(response).await;
         assert_eq!(body["error"], "invalid_input");
+    }
+
+    #[tokio::test]
+    async fn cors_allows_public_api_and_not_admin() {
+        let app = test_router().await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/register/quote?domain=example.com&username=alice")
+                    .header("origin", "https://market.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .unwrap(),
+            "*"
+        );
+        let preflight = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/v1/register")
+                    .header("origin", "https://market.example")
+                    .header("access-control-request-method", "POST")
+                    .header(
+                        "access-control-request-headers",
+                        "content-type, authorization",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(preflight.status(), StatusCode::OK);
+        let admin = app
+            .oneshot(
+                Request::get("/admin/login")
+                    .header("origin", "https://market.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(admin.headers().get("access-control-allow-origin").is_none());
     }
 
     #[tokio::test]

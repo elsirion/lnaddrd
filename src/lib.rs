@@ -15,6 +15,7 @@ use api_v1::{quote_v1, register_start_v1, register_status_v1, register_v1};
 use axum::{
     Router,
     extract::DefaultBodyLimit,
+    http::Method,
     routing::{delete, get, post, put},
 };
 use config::Config;
@@ -29,6 +30,7 @@ use service::LnaddrService;
 use service::direct::DirectLnaddrService;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, info};
 use ui::{
     lnaddress_details, register_form, register_form_submit, registration_quote, registration_start,
@@ -158,8 +160,59 @@ async fn normal_router(
         nostr,
     };
 
-    let app = Router::new()
+    Ok(build_router(app_state))
+}
+
+/// CORS policy applied to the public API and public LN address/LNURL endpoints:
+/// any origin may call them, including via a preflight `OPTIONS` request.
+fn cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+}
+
+/// Builds the full application `Router` from an already-assembled `AppState`.
+///
+/// Routes are split into two sub-routers so CORS can be scoped precisely:
+/// `public` (the JSON API under `/api/v1`, the LN address/LNURL endpoints, the
+/// domain list, and the announcement document) gets [`cors_layer`] and answers
+/// preflight requests from any origin; `private` (the admin panel, the HTMX/UI
+/// pages, static assets, and health checks) does not. Shared by both the real
+/// server (via `normal_router`) and the test harness (`api_v1::tests::test_router`)
+/// so the CORS wiring under test is the same code path production runs.
+pub(crate) fn build_router(app_state: AppState) -> Router {
+    let public = Router::new()
         .route("/domains", get(list_domains_handler))
+        .route(
+            "/.well-known/lnaddrd.json",
+            get(well_known_announcement_handler),
+        )
+        .route("/lnaddress/:domain/:username", get(get_lnaddr_handler))
+        .route("/lnaddress/register", post(register_lnaddr_handler))
+        .route("/lnaddress/remove", delete(remove_lnaddr_handler))
+        .route("/lnaddress/update", put(update_lnaddr_handler))
+        .route(
+            "/.well-known/lnurlp/:username",
+            get(get_lnaddr_manifest_handler),
+        )
+        .route("/lnurl/:username", get(generate_lnurl_handler))
+        .route("/api/v1/register/quote", get(quote_v1))
+        .route("/api/v1/register", post(register_v1))
+        .route("/api/v1/register/start", post(register_start_v1))
+        .route("/api/v1/register/:id", get(register_status_v1))
+        .layer(cors_layer());
+
+    let private = Router::new()
         .route("/health/live", get(liveness_handler))
         .route("/health/ready", get(readiness_handler))
         .route("/assets/htmx-4.0.0.min.js", get(htmx_asset_handler))
@@ -171,10 +224,6 @@ async fn normal_router(
         .route(
             "/assets/flowbite-1.7.0.min.js",
             get(flowbite_js_asset_handler),
-        )
-        .route(
-            "/.well-known/lnaddrd.json",
-            get(well_known_announcement_handler),
         )
         .route("/admin", get(dashboard))
         .route("/admin/domains/:domain/addresses", get(domain_addresses))
@@ -192,32 +241,21 @@ async fn normal_router(
         .route("/admin/address/delete", post(address_delete_submit))
         .route("/admin/restore-dry-run", post(restore_dry_run_submit))
         .route("/admin/seed/export", post(seed_export_submit))
-        .route("/lnaddress/:domain/:username", get(get_lnaddr_handler))
-        .route("/lnaddress/register", post(register_lnaddr_handler))
-        .route("/lnaddress/remove", delete(remove_lnaddr_handler))
-        .route("/lnaddress/update", put(update_lnaddr_handler))
-        .route(
-            "/.well-known/lnurlp/:username",
-            get(get_lnaddr_manifest_handler),
-        )
-        .route("/lnurl/:username", get(generate_lnurl_handler))
-        .route("/api/v1/register/quote", get(quote_v1))
-        .route("/api/v1/register", post(register_v1))
-        .route("/api/v1/register/start", post(register_start_v1))
-        .route("/api/v1/register/:id", get(register_status_v1))
         .route("/", get(register_form))
         .route("/ui/register", post(register_form_submit))
         .route("/register/quote", post(registration_quote))
         .route("/register/start", post(registration_start))
         .route("/register/status/:id", get(registration_status))
         .route("/register/:id/status", get(registration_status))
-        .route("/ui/lnaddress/:domain/:username", get(lnaddress_details))
+        .route("/ui/lnaddress/:domain/:username", get(lnaddress_details));
+
+    public
+        .merge(private)
         .layer(DefaultBodyLimit::max(16 * 1024))
         .with_state(app_state)
         .fallback(|_req: axum::http::Request<axum::body::Body>| async move {
             axum::http::StatusCode::NOT_FOUND
-        });
-    Ok(app)
+        })
 }
 
 /// Test-only `AppState` builder for handler-level tests (see `src/api_v1.rs`). The
