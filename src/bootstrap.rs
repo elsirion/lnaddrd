@@ -13,7 +13,11 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 
 use crate::{
-    admin::{AdminAuth, SESSION_COOKIE},
+    admin::{AdminAuth, SESSION_COOKIE, admin_head, input_class, label_class, primary_button},
+    api::{
+        flowbite_css_asset_handler, flowbite_js_asset_handler, htmx_asset_handler,
+        tailwind_asset_handler,
+    },
     config::Config,
     crypto::RootSecret,
     initialize_empty,
@@ -48,6 +52,16 @@ struct RecoverForm {
 pub fn router(state: BootstrapState) -> Router {
     Router::new()
         .route("/health/live", get(|| async { StatusCode::OK }))
+        .route("/assets/htmx-4.0.0.min.js", get(htmx_asset_handler))
+        .route("/assets/tailwindcss-3.4.17.js", get(tailwind_asset_handler))
+        .route(
+            "/assets/flowbite-1.7.0.min.css",
+            get(flowbite_css_asset_handler),
+        )
+        .route(
+            "/assets/flowbite-1.7.0.min.js",
+            get(flowbite_js_asset_handler),
+        )
         .route("/admin", get(setup_page))
         .route("/admin/login", get(login_page).post(login_submit))
         .route("/admin/setup/fresh", post(fresh_submit))
@@ -92,38 +106,33 @@ async fn setup_page(State(state): State<BootstrapState>, headers: HeaderMap) -> 
         html! {
             (DOCTYPE)
             html lang="en" {
-                head {
-                    meta charset="UTF-8";
-                    meta name="viewport" content="width=device-width, initial-scale=1.0";
-                    meta name="robots" content="noindex,nofollow";
-                    title { "Set up lnaddrd" }
-                }
-                body { main {
-                    h1 { "Set up lnaddrd" }
-                    p { "The administrator password unlocks setup. Choose exactly one option." }
-                    section {
-                        h2 { "Recover an existing service" }
-                        p { "Enter the 64-character root seed. lnaddrd validates the remote backup before installing it locally." }
-                        form method="post" action="/admin/setup/recover" {
+                (admin_head("Set up"))
+                body class="bg-gray-50 text-gray-900" { main class="mx-auto max-w-4xl p-4 py-10 sm:p-8" {
+                    div class="mb-8" { h1 class="text-3xl font-bold" { "Set up lnaddrd" } p class="mt-2 text-gray-600" { "The administrator password unlocks setup. Choose exactly one option." } }
+                    div class="grid gap-6 md:grid-cols-2" {
+                    section class="rounded-xl border border-blue-200 bg-white p-6 shadow-sm" {
+                        h2 class="text-xl font-semibold" { "Recover an existing service" }
+                        p class="mt-2 text-sm text-gray-600" { "Enter the 64-character root seed. lnaddrd validates the remote backup before installing it locally." }
+                        form method="post" action="/admin/setup/recover" class="mt-5 space-y-4" {
                             input type="hidden" name="csrf_token" value=(session.csrf_token);
-                            label for="root-seed" { "Root seed" }
-                            input id="root-seed" name="root_seed" type="password" minlength="64" maxlength="64" required autocomplete="off";
-                            button type="submit" { "Validate and recover" }
+                            div { label for="root-seed" class=(label_class()) { "Root seed" } input id="root-seed" name="root_seed" type="password" minlength="64" maxlength="64" required autocomplete="off" class=(input_class()); }
+                            button type="submit" class=(primary_button()) { "Validate and recover" }
                         }
                     }
-                    section {
-                        h2 { "Create a fresh service" }
+                    section class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm" {
+                        h2 class="text-xl font-semibold" { "Create a fresh service" }
                         @if seed_exists {
-                            p { "A root seed is already installed. This retries fresh initialization with that seed and cannot recover old addresses." }
+                            p class="mt-2 text-sm text-amber-700" { "A root seed is already installed. This retries fresh initialization with that seed and cannot recover old addresses." }
                         } @else {
-                            p { "This generates a new root seed and publishes an empty initial configuration. It cannot recover old addresses." }
+                            p class="mt-2 text-sm text-gray-600" { "This generates a new root seed and publishes an empty initial configuration. It cannot recover old addresses." }
                         }
-                        form method="post" action="/admin/setup/fresh" {
+                        form method="post" action="/admin/setup/fresh" class="mt-5" {
                             input type="hidden" name="csrf_token" value=(session.csrf_token);
-                            button type="submit" {
+                            button type="submit" class=(primary_button()) {
                                 @if seed_exists { "Retry fresh initialization" } @else { "Generate fresh seed" }
                             }
                         }
+                    }
                     }
                 } }
             }
@@ -244,13 +253,13 @@ fn setup_error(message: &str) -> Response {
 fn login_markup(error: Option<&str>) -> String {
     html! {
         (DOCTYPE)
-        html lang="en" { body { main {
-            h1 { "lnaddrd setup login" }
-            @if let Some(error) = error { p role="alert" { (error) } }
-            form method="post" action="/admin/login" {
-                label for="password" { "Administrator password" }
-                input id="password" type="password" name="password" required autofocus;
-                button type="submit" { "Log in" }
+        html lang="en" { (admin_head("Setup login")) body class="flex min-h-screen items-center justify-center bg-gray-50 p-4" { main class="w-full max-w-md rounded-xl border border-gray-200 bg-white p-8 shadow-sm" {
+            h1 class="text-2xl font-bold text-gray-900" { "lnaddrd setup" }
+            p class="mt-2 text-sm text-gray-500" { "Sign in with the administrator password to initialize or recover this service." }
+            @if let Some(error) = error { div role="alert" class="mt-5 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800" { (error) } }
+            form method="post" action="/admin/login" class="mt-6 space-y-5" {
+                div { label for="password" class=(label_class()) { "Administrator password" } input id="password" type="password" name="password" required autofocus class=(input_class()); }
+                button type="submit" class=(format!("{} w-full", primary_button())) { "Log in" }
             }
         } } }
     }

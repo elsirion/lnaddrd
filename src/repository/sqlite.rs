@@ -376,6 +376,70 @@ impl SqlitePaymentAddressRepository {
         .await?
     }
 
+    pub async fn admin_addresses_for_domain(
+        &self,
+        domain: &str,
+    ) -> Result<Vec<AdminAddressRecord>> {
+        let domain = domain.to_owned();
+        Ok(self
+            .admin_addresses()
+            .await?
+            .into_iter()
+            .filter(|address| address.domain == domain)
+            .collect())
+    }
+
+    pub async fn paid_income_by_domain(&self) -> Result<BTreeMap<String, u64>> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut connection = pool.get()?;
+            registration_attempts::table
+                .filter(registration_attempts::paid_at.is_not_null())
+                .select((
+                    registration_attempts::domain,
+                    registration_attempts::amount_msat,
+                ))
+                .load::<(String, i64)>(&mut connection)?
+                .into_iter()
+                .try_fold(BTreeMap::new(), |mut totals, (domain, amount)| {
+                    let amount = u64::try_from(amount)?;
+                    *totals.entry(domain).or_default() += amount;
+                    Ok(totals)
+                })
+        })
+        .await?
+    }
+
+    pub async fn relay_replication(&self) -> Result<Vec<RelayReplicationRecord>> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut connection = pool.get()?;
+            let current = backup_records::table
+                .select(backup_records::event_id)
+                .load::<String>(&mut connection)?
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            let mut counts = BTreeMap::<String, u64>::new();
+            for (event_id, relay_url) in nostr_event_relays::table
+                .filter(nostr_event_relays::status.eq("acknowledged"))
+                .select((nostr_event_relays::event_id, nostr_event_relays::relay_url))
+                .load::<(String, String)>(&mut connection)?
+            {
+                if current.contains(&event_id) {
+                    *counts.entry(relay_url).or_default() += 1;
+                }
+            }
+            Ok(counts
+                .into_iter()
+                .map(|(relay_url, confirmed_events)| RelayReplicationRecord {
+                    relay_url,
+                    confirmed_events,
+                })
+                .collect())
+        })
+        .await?
+    }
+
     pub async fn relay_health(&self) -> Result<Vec<RelayHealthRecord>> {
         let pool = self.pool.clone();
         tokio::task::spawn_blocking(move || {
@@ -1147,6 +1211,12 @@ pub struct RelayHealthRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct RelayReplicationRecord {
+    pub relay_url: String,
+    pub confirmed_events: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct AdminSessionRecord {
     pub csrf_token: String,
     pub expires_at: i64,
@@ -1747,6 +1817,106 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn admin_stats_are_scoped_to_paid_and_current_records() {
+        use crate::{
+            crypto::RootSecret,
+            nostr::{
+                codec::{AddressRecord, BackupCodec, UpdatedBy},
+                publisher::Publication,
+            },
+        };
+
+        let (_directory, repository) = repository();
+        repository
+            .add_payment_address(
+                "example.com",
+                "alice",
+                "receiver@example.net".parse().unwrap(),
+                "secret",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            repository
+                .admin_addresses_for_domain("example.com")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            repository
+                .admin_addresses_for_domain("other.example")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        repository
+            .create_registration_attempt(RegistrationAttempt {
+                id: "paid".to_owned(),
+                domain: "example.com".to_owned(),
+                username: "bob".to_owned(),
+                destination: "receiver@example.net".to_owned(),
+                state: "completed".to_owned(),
+                amount_msat: 12_000,
+                policy_fingerprint: "policy".to_owned(),
+                recipient_fingerprint: "recipient".to_owned(),
+                bolt11: "invoice".to_owned(),
+                payment_hash: "hash".to_owned(),
+                verify_url: "https://example.net/verify".to_owned(),
+                authentication_token: "token".to_owned(),
+                authentication_token_hash: "token-hash".to_owned(),
+                backup_event_id: None,
+                paid_at: Some(1_700_000_000),
+                expires_at: 1_700_000_100,
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_000,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            repository
+                .paid_income_by_domain()
+                .await
+                .unwrap()
+                .get("example.com"),
+            Some(&12_000)
+        );
+
+        let keys = RootSecret::from_bytes([0x24; 32]).derive().unwrap();
+        let destination = "receiver@example.net".parse().unwrap();
+        let record = AddressRecord::active(
+            &keys,
+            "alice@example.com".parse().unwrap(),
+            1,
+            &destination,
+            "$argon2id$example".to_owned(),
+            1_700_000_000,
+            1_700_000_001,
+            UpdatedBy::Token,
+        );
+        let event = BackupCodec::new(&keys).encode_address(&record).unwrap();
+        repository
+            .store_backup_record("current", &event, "address", Some("active"), 1, 1)
+            .await
+            .unwrap();
+        repository
+            .record_publication(
+                &event.id.to_string(),
+                &Publication {
+                    accepted_by: vec!["wss://relay.example.com".parse().unwrap()],
+                    failed: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        let replication = repository.relay_replication().await.unwrap();
+        assert_eq!(replication.len(), 1);
+        assert_eq!(replication[0].confirmed_events, 1);
     }
 
     #[tokio::test]

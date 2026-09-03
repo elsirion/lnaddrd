@@ -1,7 +1,7 @@
 use admin::{
-    AdminAuth, address_delete_submit, address_retry_submit, dashboard, login_page, login_submit,
-    logout_submit, payment_policy_submit, reserved_name_submit, restore_dry_run_submit,
-    seed_export_submit,
+    AdminAuth, address_delete_submit, address_retry_submit, dashboard, domain_addresses,
+    domain_settings, login_page, login_submit, logout_submit, payment_policy_submit,
+    reserved_name_submit, restore_dry_run_submit, seed_export_submit,
 };
 use anyhow::Result;
 use api::{
@@ -174,6 +174,8 @@ async fn normal_router(
             get(well_known_announcement_handler),
         )
         .route("/admin", get(dashboard))
+        .route("/admin/domains/:domain/addresses", get(domain_addresses))
+        .route("/admin/domains/:domain/settings", get(domain_settings))
         .route("/admin/login", get(login_page).post(login_submit))
         .route("/admin/logout", post(logout_submit))
         .route("/admin/reserved", post(reserved_name_submit))

@@ -13,7 +13,7 @@ use argon2::{
 };
 use axum::{
     Form,
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
 };
@@ -226,84 +226,188 @@ pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Res
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let addresses = state.repository.admin_addresses().await.unwrap_or_default();
+    let income = state
+        .repository
+        .paid_income_by_domain()
+        .await
+        .unwrap_or_default();
     let relays = state.repository.relay_health().await.unwrap_or_default();
+    let replication = state
+        .repository
+        .relay_replication()
+        .await
+        .unwrap_or_default();
+    let total_addresses = addresses.len();
     let markup = html! {
         (DOCTYPE)
         html lang="en" {
-            head {
-                meta charset="UTF-8";
-                meta name="viewport" content="width=device-width, initial-scale=1.0";
-                title { "lnaddrd administration" }
-                script src="/assets/htmx-4.0.0.min.js" {}
-            }
-            body {
-                main {
-                    h1 { "lnaddrd administration" }
-                    p { "Service public key: " code { (state.keys.service_public_key()) } }
-                    p { "Pending Nostr events: " (pending) }
-                    h2 { "Relay health" }
-                    table {
-                        tr { th { "Relay" } th { "Last success" } th { "Last error" } }
-                        @for relay in relays {
-                            tr {
-                                td { code { (relay.relay_url) } }
-                                td { (relay.last_success_at.map_or_else(|| "never".to_owned(), |value| value.to_string())) }
-                                td { (relay.last_error.unwrap_or_default()) }
-                            }
-                        }
+            (admin_head("Dashboard"))
+            body class="bg-gray-50 text-gray-900" {
+                (admin_nav(&session.csrf_token))
+                main class="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8 space-y-8" {
+                    div { h1 class="text-3xl font-bold tracking-tight" { "Dashboard" } p class="mt-1 text-sm text-gray-500" { "Service overview and backup health" } }
+                    div class="grid gap-4 sm:grid-cols-3" {
+                        (stat_card("Addresses", &total_addresses.to_string()))
+                        (stat_card("Domains", &configuration.domains.len().to_string()))
+                        (stat_card("Pending events", &pending.to_string()))
                     }
-                    h2 { "Addresses" }
-                    table {
-                        tr { th { "Address" } th { "Destination" } th { "State" } th { "Revision" } th { "Actions" } }
-                        @for address in addresses {
-                            tr {
-                                td { (address.username) "@" (address.domain) }
-                                td { code { (address.destination) } }
-                                td { (address.state) }
-                                td { (address.revision) }
-                                td {
-                                    @if address.backup_event_id.is_some() {
-                                        form method="post" action="/admin/address/retry" style="display:inline"
-                                            hx-post="/admin/address/retry" hx-target="#admin-action-result" {
-                                            input type="hidden" name="csrf_token" value=(session.csrf_token);
-                                            input type="hidden" name="domain" value=(address.domain);
-                                            input type="hidden" name="username" value=(address.username);
-                                            button type="submit" { "Retry backup" }
-                                        }
-                                    }
-                                    form method="post" action="/admin/address/delete" style="display:inline"
-                                        hx-post="/admin/address/delete" hx-target="#admin-action-result"
-                                        hx-confirm=(format!("Delete {}@{}?", address.username, address.domain)) {
-                                        input type="hidden" name="csrf_token" value=(session.csrf_token);
-                                        input type="hidden" name="domain" value=(address.domain);
-                                        input type="hidden" name="username" value=(address.username);
-                                        button type="submit" { "Delete" }
+                    div class="rounded-lg border border-gray-200 bg-white px-5 py-4 text-sm shadow-sm" {
+                        span class="font-medium text-gray-700" { "Service public key" }
+                        code class="mt-1 block break-all text-xs text-gray-500" { (state.keys.service_public_key()) }
+                    }
+                    section class="rounded-lg border border-gray-200 bg-white shadow-sm" {
+                        div class="border-b border-gray-200 p-5" { h2 class="text-xl font-semibold" { "Domains" } }
+                        div class="overflow-x-auto" { table class="w-full text-left text-sm text-gray-600" {
+                            thead class="bg-gray-50 text-xs uppercase text-gray-700" { tr {
+                                th class="px-6 py-3" { "Domain" } th class="px-6 py-3 text-right" { "Addresses" }
+                                th class="px-6 py-3 text-right" { "Income" } th class="px-6 py-3 text-right" { "Actions" }
+                            } }
+                            tbody {
+                                @for domain in configuration.domains.keys() {
+                                    @let count = addresses.iter().filter(|address| address.domain == domain.as_str()).count();
+                                    @let earned = income.get(domain.as_str()).copied().unwrap_or_default();
+                                    tr class="border-t border-gray-200 bg-white" {
+                                        th scope="row" class="whitespace-nowrap px-6 py-4 font-medium text-gray-900" { (domain) }
+                                        td class="px-6 py-4 text-right" { (count) }
+                                        td class="px-6 py-4 text-right font-mono" { (format_msat(earned)) }
+                                        td class="px-6 py-4" { div class="flex justify-end gap-2" {
+                                            a href=(format!("/admin/domains/{domain}/addresses")) title="List addresses" aria-label=(format!("List addresses for {domain}")) class="rounded-lg p-2 text-blue-700 hover:bg-blue-50" { (list_icon()) }
+                                            a href=(format!("/admin/domains/{domain}/settings")) title="Edit settings" aria-label=(format!("Edit settings for {domain}")) class="rounded-lg p-2 text-gray-700 hover:bg-gray-100" { (wrench_icon()) }
+                                        } }
                                     }
                                 }
                             }
+                        } }
+                    }
+                    section class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm" {
+                        div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" {
+                            div { h2 class="text-xl font-semibold" { "Nostr replication" } p class="mt-1 text-sm text-gray-500" { "Current backup events confirmed by each relay. Records are refreshed every six hours." } }
+                            form method="post" action="/admin/restore-dry-run" hx-post="/admin/restore-dry-run" hx-target="#admin-action-result" {
+                                input type="hidden" name="csrf_token" value=(session.csrf_token);
+                                button type="submit" class=(secondary_button()) { "Compare remote backup" }
+                            }
+                        }
+                        div id="admin-action-result" class="mt-4" {}
+                        div class="mt-4 overflow-x-auto" { table class="w-full text-left text-sm text-gray-600" {
+                            thead class="bg-gray-50 text-xs uppercase text-gray-700" { tr { th class="px-4 py-3" { "Relay" } th class="px-4 py-3 text-right" { "Confirmed events" } th class="px-4 py-3" { "Last success" } th class="px-4 py-3" { "Last error" } } }
+                            tbody { @for relay in relays {
+                                @let count = replication.iter().find(|entry| entry.relay_url == relay.relay_url).map(|entry| entry.confirmed_events).unwrap_or_default();
+                                tr class="border-t border-gray-200" { td class="px-4 py-3 font-mono text-xs" { (relay.relay_url) } td class="px-4 py-3 text-right" { (count) } td class="px-4 py-3" { (format_timestamp(relay.last_success_at)) } td class="px-4 py-3 text-red-600" { (relay.last_error.unwrap_or_default()) } }
+                            } }
+                        } }
+                    }
+                    section class="rounded-lg border border-amber-200 bg-amber-50 p-5" {
+                        h2 class="text-xl font-semibold text-amber-950" { "Root seed backup" }
+                        p class="mt-1 text-sm text-amber-800" { "The root seed is the only irreplaceable service state. Export it only to secure offline storage." }
+                        form method="post" action="/admin/seed/export" class="mt-4 flex max-w-xl flex-col gap-3 sm:flex-row sm:items-end" {
+                            input type="hidden" name="csrf_token" value=(session.csrf_token);
+                            div class="grow" { label for="seed-password" class=(label_class()) { "Confirm admin password" } input id="seed-password" type="password" name="password" required class=(input_class()); }
+                            button type="submit" class=(primary_button()) { "Export root seed" }
                         }
                     }
+                }
+            }
+        }
+    };
+    Html(markup.into_string()).into_response()
+}
+
+pub async fn domain_addresses(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(domain): AxumPath<String>,
+) -> Response {
+    let session = match state.admin_auth.authenticate(&headers).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return Redirect::to("/admin/login").into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if !state
+        .config
+        .domains
+        .iter()
+        .any(|configured| configured == &domain)
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let addresses = match state.repository.admin_addresses_for_domain(&domain).await {
+        Ok(addresses) => addresses,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let markup = html! {
+        (DOCTYPE)
+        html lang="en" {
+            (admin_head(&format!("{domain} addresses")))
+            body class="bg-gray-50 text-gray-900" {
+                (admin_nav(&session.csrf_token))
+                main class="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8 space-y-6" {
+                    div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" {
+                        div { a href="/admin" class="text-sm font-medium text-blue-700 hover:underline" { "← Dashboard" } h1 class="mt-2 text-3xl font-bold tracking-tight" { (domain) " addresses" } p class="mt-1 text-sm text-gray-500" { (addresses.len()) " registered addresses" } }
+                        a href=(format!("/admin/domains/{domain}/settings")) class=(secondary_button()) { (wrench_icon()) span class="ml-2" { "Domain settings" } }
+                    }
                     div id="admin-action-result" {}
-                    form method="post" action="/admin/restore-dry-run"
-                        hx-post="/admin/restore-dry-run" hx-target="#admin-action-result" {
-                        input type="hidden" name="csrf_token" value=(session.csrf_token);
-                        button type="submit" { "Compare with Nostr backup" }
+                    section class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm" {
+                        div class="overflow-x-auto" { table class="w-full text-left text-sm text-gray-600" {
+                            thead class="bg-gray-50 text-xs uppercase text-gray-700" { tr { th class="px-5 py-3" { "Address" } th class="px-5 py-3" { "Destination" } th class="px-5 py-3" { "State" } th class="px-5 py-3 text-right" { "Revision" } th class="px-5 py-3 text-right" { "Actions" } } }
+                            tbody {
+                                @if addresses.is_empty() { tr { td colspan="5" class="px-5 py-10 text-center text-gray-500" { "No addresses for this domain." } } }
+                                @for address in addresses {
+                                    tr class="border-t border-gray-200 align-top" {
+                                        th scope="row" class="whitespace-nowrap px-5 py-4 font-medium text-gray-900" { (address.username) "@" (address.domain) }
+                                        td class="max-w-md break-all px-5 py-4 font-mono text-xs" { (address.destination) }
+                                        td class="px-5 py-4" { span class=(state_badge(&address.state)) { (address.state) } }
+                                        td class="px-5 py-4 text-right" { (address.revision) }
+                                        td class="px-5 py-4" { div class="flex justify-end gap-2" {
+                                            @if address.backup_event_id.is_some() { form method="post" action="/admin/address/retry" hx-post="/admin/address/retry" hx-target="#admin-action-result" {
+                                                input type="hidden" name="csrf_token" value=(session.csrf_token); input type="hidden" name="domain" value=(address.domain); input type="hidden" name="username" value=(address.username);
+                                                button type="submit" class=(secondary_button()) { "Retry backup" }
+                                            } }
+                                            form method="post" action="/admin/address/delete" hx-post="/admin/address/delete" hx-target="#admin-action-result" hx-confirm=(format!("Delete {}@{}?", address.username, address.domain)) {
+                                                input type="hidden" name="csrf_token" value=(session.csrf_token); input type="hidden" name="domain" value=(address.domain); input type="hidden" name="username" value=(address.username);
+                                                button type="submit" class=(danger_button()) { "Delete" }
+                                            }
+                                        } }
+                                    }
+                                }
+                            }
+                        } }
                     }
-                    h2 { "Root seed backup" }
-                    p { "The root seed is the only irreplaceable service state. Export it only to secure offline storage." }
-                    form method="post" action="/admin/seed/export" {
-                        input type="hidden" name="csrf_token" value=(session.csrf_token);
-                        label for="seed-password" { "Confirm admin password" }
-                        input id="seed-password" type="password" name="password" required;
-                        button type="submit" { "Export root seed" }
-                    }
-                    section id="configuration" {
-                        (configuration_markup(&configuration, &session.csrf_token, None))
-                    }
-                    form method="post" action="/admin/logout" {
-                        input type="hidden" name="csrf_token" value=(session.csrf_token);
-                        button type="submit" { "Log out" }
-                    }
+                }
+            }
+        }
+    };
+    Html(markup.into_string()).into_response()
+}
+
+pub async fn domain_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(domain): AxumPath<String>,
+) -> Response {
+    let session = match state.admin_auth.authenticate(&headers).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return Redirect::to("/admin/login").into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let parsed_domain = match domain.parse::<Domain>() {
+        Ok(domain) => domain,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let configuration = match state.configuration_manager.current().await {
+        Ok(configuration) if configuration.domains.contains_key(&parsed_domain) => configuration,
+        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let markup = html! {
+        (DOCTYPE)
+        html lang="en" {
+            (admin_head(&format!("{domain} settings")))
+            body class="bg-gray-50 text-gray-900" {
+                (admin_nav(&session.csrf_token))
+                main class="mx-auto max-w-4xl p-4 sm:p-6 lg:p-8" {
+                    a href="/admin" class="text-sm font-medium text-blue-700 hover:underline" { "← Dashboard" }
+                    div class="mt-2 flex items-center gap-3" { (wrench_icon()) h1 class="text-3xl font-bold tracking-tight" { (domain) " settings" } }
+                    section id="configuration" class="mt-6" { (configuration_markup(&configuration, &session.csrf_token, Some(&domain), None)) }
                 }
             }
         }
@@ -534,8 +638,16 @@ pub async fn reserved_name_submit(
             update.revision
         )
     };
-    Html(configuration_markup(&configuration, &session.csrf_token, Some(&message)).into_string())
-        .into_response()
+    Html(
+        configuration_markup(
+            &configuration,
+            &session.csrf_token,
+            Some(&form.domain),
+            Some(&message),
+        )
+        .into_string(),
+    )
+    .into_response()
 }
 
 pub async fn payment_policy_submit(
@@ -591,8 +703,16 @@ pub async fn payment_policy_submit(
             update.revision
         )
     };
-    Html(configuration_markup(&configuration, &session.csrf_token, Some(&message)).into_string())
-        .into_response()
+    Html(
+        configuration_markup(
+            &configuration,
+            &session.csrf_token,
+            Some(&form.domain),
+            Some(&message),
+        )
+        .into_string(),
+    )
+    .into_response()
 }
 
 pub async fn logout_submit(
@@ -622,15 +742,17 @@ pub async fn logout_submit(
 fn configuration_markup(
     configuration: &ServiceConfigurationRecord,
     csrf_token: &str,
+    selected_domain: Option<&str>,
     message: Option<&str>,
 ) -> maud::Markup {
     html! {
-        @if let Some(message) = message { p role="status" { (message) } }
-        h2 { "Reserved names" }
+        @if let Some(message) = message { div role="status" class="mb-5 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800" { (message) } }
         @for (domain, domain_configuration) in &configuration.domains {
-            section {
-                h3 { (domain) }
-                h4 { "Registration pricing" }
+            @if selected_domain.is_none_or(|selected| selected == domain.as_str()) {
+            div class="space-y-6" {
+                section class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm" {
+                h2 class="text-xl font-semibold" { "Registration pricing" }
+                p class="mt-1 text-sm text-gray-500" { "Optionally charge based on username length and verify payment through LUD-21." }
                 @let destination = domain_configuration.payment_policy.as_ref()
                     .and_then(|policy| Destination::try_from(policy.destination.clone()).ok())
                     .map(|value| value.to_string()).unwrap_or_default();
@@ -639,53 +761,57 @@ fn configuration_markup(
                         .collect::<Vec<_>>().join("\n")
                 }).unwrap_or_default();
                 form method="post" action="/admin/payment-policy"
-                    hx-post="/admin/payment-policy" hx-target="#configuration" hx-swap="innerHTML" {
+                    class="mt-5 space-y-4" hx-post="/admin/payment-policy" hx-target="#configuration" hx-swap="innerHTML" {
                     input type="hidden" name="csrf_token" value=(csrf_token);
                     input type="hidden" name="domain" value=(domain);
-                    label {
-                        input type="checkbox" name="enabled" value="true"
+                    label class="inline-flex cursor-pointer items-center gap-3" {
+                        input type="checkbox" name="enabled" value="true" class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                             checked[domain_configuration.payment_policy.is_some()];
-                        " Require payment"
+                        span class="text-sm font-medium text-gray-900" { "Require payment" }
                     }
-                    label { " Recipient " input name="destination" value=(destination); }
-                    label {
-                        " Tiers (max_length=price_msat, one per line)"
-                        textarea name="tiers" { (tiers) }
+                    div { label for="pricing-destination" class=(label_class()) { "Recipient LNURL or Lightning Address" } input id="pricing-destination" name="destination" value=(destination) class=(input_class()); }
+                    div { label for="pricing-tiers" class=(label_class()) { "Tiers" } p class="mb-2 text-xs text-gray-500" { "One max_length=price_msat pair per line" }
+                        textarea id="pricing-tiers" name="tiers" rows="5" class=(input_class()) { (tiers) }
                     }
-                    p { "Saving probes the recipient with an unpaid invoice and requires LUD-21 verification." }
-                    button type="submit" { "Save pricing" }
+                    p class="text-sm text-gray-500" { "Saving probes the recipient with an unpaid invoice and requires LUD-21 verification." }
+                    button type="submit" class=(primary_button()) { "Save pricing" }
                 }
-                h4 { "Reserved names" }
-                ul {
+                }
+                section class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm" {
+                h2 class="text-xl font-semibold" { "Reserved names" }
+                p class="mt-1 text-sm text-gray-500" { "Prevent selected usernames from being registered publicly." }
+                ul class="mt-5 divide-y divide-gray-200 rounded-lg border border-gray-200" {
                     @for username in &domain_configuration.reserved_names {
-                        li {
-                            (username)
-                            form method="post" action="/admin/reserved" style="display:inline"
+                        li class="flex items-center justify-between gap-4 px-4 py-3" {
+                            code class="text-sm font-medium" { (username) }
+                            form method="post" action="/admin/reserved"
                                 hx-post="/admin/reserved" hx-target="#configuration" hx-swap="innerHTML" {
                                 input type="hidden" name="csrf_token" value=(csrf_token);
                                 input type="hidden" name="domain" value=(domain);
                                 input type="hidden" name="username" value=(username);
                                 input type="hidden" name="reserved" value="false";
-                                button type="submit" { "Unreserve" }
+                                button type="submit" class=(danger_button()) { "Unreserve" }
                             }
                         }
                     }
                 }
                 form method="post" action="/admin/reserved"
-                    hx-post="/admin/reserved" hx-target="#configuration" hx-swap="innerHTML" {
+                    class="mt-5 flex flex-col gap-3 sm:flex-row sm:items-end" hx-post="/admin/reserved" hx-target="#configuration" hx-swap="innerHTML" {
                     input type="hidden" name="csrf_token" value=(csrf_token);
                     input type="hidden" name="domain" value=(domain);
                     input type="hidden" name="reserved" value="true";
-                    label { "Reserve username " input name="username" required; }
-                    button type="submit" { "Reserve" }
+                    div class="grow" { label for="reserve-username" class=(label_class()) { "Username" } input id="reserve-username" name="username" required class=(input_class()); }
+                    button type="submit" class=(secondary_button()) { "Reserve username" }
                 }
+                }
+            }
             }
         }
     }
 }
 
 fn configuration_error(error: anyhow::Error) -> Response {
-    let markup = html! { p role="alert" { (error) } };
+    let markup = html! { div role="alert" class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800" { (error) } };
     (StatusCode::BAD_REQUEST, Html(markup.into_string())).into_response()
 }
 
@@ -709,23 +835,82 @@ fn csrf_matches(session: &AdminSession, candidate: &str) -> bool {
         == 1
 }
 
+pub(crate) fn admin_head(title: &str) -> maud::Markup {
+    html! { head {
+        meta charset="UTF-8"; meta name="viewport" content="width=device-width, initial-scale=1.0";
+        title { (title) " · lnaddrd admin" }
+        link rel="stylesheet" href="/assets/flowbite-1.7.0.min.css";
+        script src="/assets/tailwindcss-3.4.17.js" {} script src="/assets/flowbite-1.7.0.min.js" {} script src="/assets/htmx-4.0.0.min.js" {}
+    } }
+}
+
+fn admin_nav(csrf_token: &str) -> maud::Markup {
+    html! { nav class="border-b border-gray-200 bg-white" { div class="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8" {
+        a href="/admin" class="text-xl font-bold tracking-tight text-gray-900" { "lnaddrd" span class="font-normal text-gray-500" { " admin" } }
+        form method="post" action="/admin/logout" { input type="hidden" name="csrf_token" value=(csrf_token); button type="submit" class="rounded-lg px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100" { "Log out" } }
+    } } }
+}
+
+fn stat_card(label: &str, value: &str) -> maud::Markup {
+    html! { div class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm" { p class="text-sm font-medium text-gray-500" { (label) } p class="mt-2 text-3xl font-bold text-gray-900" { (value) } } }
+}
+
+pub(crate) fn input_class() -> &'static str {
+    "block w-full rounded-lg border border-gray-300 bg-gray-50 p-2.5 text-sm text-gray-900 focus:border-blue-500 focus:ring-blue-500"
+}
+pub(crate) fn label_class() -> &'static str {
+    "mb-2 block text-sm font-medium text-gray-900"
+}
+pub(crate) fn primary_button() -> &'static str {
+    "inline-flex items-center justify-center rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-300"
+}
+fn secondary_button() -> &'static str {
+    "inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-4 focus:ring-gray-200"
+}
+fn danger_button() -> &'static str {
+    "inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 focus:outline-none focus:ring-4 focus:ring-red-100"
+}
+
+fn state_badge(state: &str) -> &'static str {
+    if state == "active" {
+        "rounded-full bg-green-100 px-2.5 py-1 text-xs font-medium text-green-800"
+    } else {
+        "rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800"
+    }
+}
+fn format_msat(value: u64) -> String {
+    if value % 1000 == 0 {
+        format!("{} sats", value / 1000)
+    } else {
+        format!("{value} msat")
+    }
+}
+fn format_timestamp(value: Option<i64>) -> String {
+    value.map_or_else(
+        || "never".to_owned(),
+        |timestamp| format!("Unix {timestamp}"),
+    )
+}
+
+fn list_icon() -> maud::Markup {
+    html! { (maud::PreEscaped(r#"<svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>"#)) }
+}
+fn wrench_icon() -> maud::Markup {
+    html! { (maud::PreEscaped(r#"<svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.7 6.3a4 4 0 0 0-5 5L3 18v3h3l6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3 2.4-2.4Z"/></svg>"#)) }
+}
+
 fn login_markup(error: Option<&str>) -> String {
     html! {
         (DOCTYPE)
         html lang="en" {
-            head {
-                meta charset="UTF-8";
-                meta name="viewport" content="width=device-width, initial-scale=1.0";
-                title { "lnaddrd admin login" }
-            }
-            body {
-                main {
-                    h1 { "Administrator login" }
-                    @if let Some(error) = error { p { (error) } }
-                    form method="post" action="/admin/login" {
-                        label for="password" { "Password" }
-                        input id="password" name="password" type="password" required autofocus;
-                        button type="submit" { "Log in" }
+            (admin_head("Login"))
+            body class="flex min-h-screen items-center justify-center bg-gray-50 p-4" {
+                main class="w-full max-w-md rounded-xl border border-gray-200 bg-white p-8 shadow-sm" {
+                    div class="mb-6 text-center" { h1 class="text-2xl font-bold text-gray-900" { "Administrator login" } p class="mt-2 text-sm text-gray-500" { "Sign in to manage this lnaddrd instance." } }
+                    @if let Some(error) = error { div role="alert" class="mb-5 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800" { (error) } }
+                    form method="post" action="/admin/login" class="space-y-5" {
+                        div { label for="password" class=(label_class()) { "Password" } input id="password" name="password" type="password" required autofocus class=(input_class()); }
+                        button type="submit" class=(format!("{} w-full", primary_button())) { "Log in" }
                     }
                 }
             }
