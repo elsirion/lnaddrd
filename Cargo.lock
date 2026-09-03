@@ -1208,6 +1208,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "axum",
+ "base64",
  "clap",
  "diesel",
  "diesel_migrations",
