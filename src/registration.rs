@@ -267,6 +267,7 @@ impl RegistrationManager {
                 expires_at,
                 created_at: now,
                 updated_at: now,
+                owner_pubkey: None,
             })
             .await?;
         Ok(StartedRegistration {
@@ -356,6 +357,7 @@ impl RegistrationManager {
                 &record.address_key,
                 &event,
                 Some(id),
+                None,
             )
             .await?;
         match self.publisher.publish(&event).await {

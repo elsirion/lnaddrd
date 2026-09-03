@@ -30,6 +30,7 @@ pub enum UpdatedBy {
     Admin,
     Import,
     RestoreRepair,
+    Owner,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +91,8 @@ pub struct AddressRecord {
     pub created_at: u64,
     pub updated_at: u64,
     pub updated_by: UpdatedBy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pubkey: Option<String>,
 }
 
 impl std::fmt::Debug for AddressRecord {
@@ -132,6 +135,7 @@ impl AddressRecord {
             created_at,
             updated_at,
             updated_by,
+            owner_pubkey: None,
         }
     }
 
@@ -155,11 +159,17 @@ impl AddressRecord {
             created_at,
             updated_at,
             updated_by,
+            owner_pubkey: None,
         }
     }
 
     pub fn with_registration(mut self, registration: RegistrationReceipt) -> Self {
         self.registration = Some(registration);
+        self
+    }
+
+    pub fn with_owner(mut self, owner_pubkey: Option<String>) -> Self {
+        self.owner_pubkey = owner_pubkey;
         self
     }
 }

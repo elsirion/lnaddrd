@@ -239,6 +239,7 @@ pub async fn restore(
                 domain: record.address.domain.to_string(),
                 destination,
                 token_hash,
+                owner_pubkey: record.owner_pubkey.clone(),
                 state: state.to_owned(),
                 revision: record.revision,
                 address_key: record.address_key.clone(),
@@ -371,6 +372,7 @@ mod tests {
             profile: None,
             updated_at: 100,
         };
+        let owner_pubkey = "a".repeat(64);
         let active = AddressRecord::active(
             &keys,
             "alice@example.com".parse().unwrap(),
@@ -380,7 +382,8 @@ mod tests {
             100,
             101,
             UpdatedBy::Token,
-        );
+        )
+        .with_owner(Some(owner_pubkey.clone()));
         let deleted = AddressRecord::tombstone(
             &keys,
             "bob@example.com".parse().unwrap(),
@@ -414,6 +417,12 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        let managed = repository
+            .get_address_for_management("example.com", "alice")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(managed.owner_pubkey.as_deref(), Some(owner_pubkey.as_str()));
         assert!(
             repository
                 .get_payment_address("example.com", "bob")

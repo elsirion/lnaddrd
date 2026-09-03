@@ -56,6 +56,7 @@ impl SqlitePaymentAddressRepository {
         address_key: &str,
         event: &Event,
         registration_attempt_id: Option<&str>,
+        owner_pubkey: Option<&str>,
     ) -> Result<()> {
         let pool = self.pool.clone();
         let domain = domain.to_owned();
@@ -67,6 +68,7 @@ impl SqlitePaymentAddressRepository {
         let event_json = serde_json::to_string(event)?;
         let event_timestamp = event.created_at.as_secs();
         let registration_attempt_id = registration_attempt_id.map(ToOwned::to_owned);
+        let owner_pubkey = owner_pubkey.map(ToOwned::to_owned);
         tokio::task::spawn_blocking(move || {
             let mut connection = pool.get()?;
             connection.transaction(|connection| {
@@ -111,6 +113,7 @@ impl SqlitePaymentAddressRepository {
                         revision: 1,
                         address_key: &address_key,
                         backup_event_id: &event_id,
+                        owner_pubkey: owner_pubkey.as_deref(),
                     })
                     .execute(connection)?;
                 insert_outbox(connection, &event_id, &event_json)?;
@@ -282,6 +285,32 @@ impl SqlitePaymentAddressRepository {
                 .optional()?
                 .map(TryInto::try_into)
                 .transpose()
+        })
+        .await?
+    }
+
+    pub async fn addresses_for_owner(&self, owner_pubkey: &str) -> Result<Vec<OwnedAddress>> {
+        let pool = self.pool.clone();
+        let owner_pubkey = owner_pubkey.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut connection = pool.get()?;
+            let rows = payment_addresses::table
+                .filter(payment_addresses::owner_pubkey.eq(owner_pubkey))
+                .filter(payment_addresses::state.eq("active"))
+                .select((
+                    payment_addresses::domain,
+                    payment_addresses::username,
+                    payment_addresses::destination,
+                ))
+                .load::<(String, String, String)>(&mut connection)?
+                .into_iter()
+                .map(|(domain, username, destination)| OwnedAddress {
+                    domain,
+                    username,
+                    destination,
+                })
+                .collect();
+            Ok(rows)
         })
         .await?
     }
@@ -1131,6 +1160,7 @@ impl SqlitePaymentAddressRepository {
                                 backup_event_id: &restored.backup.event_id,
                                 created_at: i64::try_from(restored.created_at)?,
                                 updated_at: restored.backup.updated_at,
+                                owner_pubkey: restored.owner_pubkey.as_deref(),
                             })
                             .execute(connection)?;
                     }
@@ -1175,6 +1205,7 @@ pub struct RestoredAddress {
     pub domain: String,
     pub destination: Option<String>,
     pub token_hash: Option<String>,
+    pub owner_pubkey: Option<String>,
     pub state: String,
     pub revision: u64,
     pub address_key: String,
@@ -1197,6 +1228,14 @@ pub struct ManagedAddress {
     pub created_at: u64,
     pub state: String,
     pub backup_event_id: Option<String>,
+    pub owner_pubkey: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnedAddress {
+    pub domain: String,
+    pub username: String,
+    pub destination: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1251,6 +1290,7 @@ pub struct RegistrationAttempt {
     pub expires_at: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    pub owner_pubkey: Option<String>,
 }
 
 impl std::fmt::Debug for RegistrationAttempt {
@@ -1398,6 +1438,7 @@ diesel::table! {
         expires_at -> BigInt,
         created_at -> BigInt,
         updated_at -> BigInt,
+        owner_pubkey -> Nullable<Text>,
     }
 }
 
@@ -1417,6 +1458,7 @@ diesel::table! {
         pending_destination -> Nullable<Text>,
         pending_revision -> Nullable<Integer>,
         pending_backup_event_id -> Nullable<Text>,
+        owner_pubkey -> Nullable<Text>,
     }
 }
 
@@ -1520,6 +1562,7 @@ struct PaymentAddressEntry {
     _pending_destination: Option<String>,
     _pending_revision: Option<i32>,
     _pending_backup_event_id: Option<String>,
+    owner_pubkey: Option<String>,
 }
 
 #[derive(Insertable)]
@@ -1542,6 +1585,7 @@ struct NewStagedPaymentAddressEntry<'a> {
     revision: i32,
     address_key: &'a str,
     backup_event_id: &'a str,
+    owner_pubkey: Option<&'a str>,
 }
 
 #[derive(Insertable)]
@@ -1557,6 +1601,7 @@ struct NewRestoredPaymentAddressEntry<'a> {
     revision: i32,
     address_key: &'a str,
     backup_event_id: &'a str,
+    owner_pubkey: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -1629,6 +1674,7 @@ impl TryFrom<PaymentAddressEntry> for ManagedAddress {
             created_at: u64::try_from(entry.created_at)?,
             state: entry._state,
             backup_event_id: entry._backup_event_id,
+            owner_pubkey: entry.owner_pubkey,
         })
     }
 }
@@ -1903,6 +1949,7 @@ mod tests {
                 expires_at: 1_700_000_100,
                 created_at: 1_700_000_000,
                 updated_at: 1_700_000_000,
+                owner_pubkey: None,
             })
             .await
             .unwrap();
@@ -1979,5 +2026,67 @@ mod tests {
             .await
             .unwrap();
         assert!(repository.pending_events(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn owner_pubkey_round_trips_and_lists() {
+        use crate::{
+            crypto::RootSecret,
+            nostr::codec::{AddressRecord, BackupCodec, UpdatedBy},
+        };
+
+        let (_directory, repository) = repository();
+        let keys = RootSecret::from_bytes([0x11; 32]).derive().unwrap();
+        let destination = "receiver@example.net".parse().unwrap();
+        let record = AddressRecord::active(
+            &keys,
+            "alice@example.com".parse().unwrap(),
+            1,
+            &destination,
+            "$argon2id$example".to_owned(),
+            1_700_000_000,
+            1_700_000_001,
+            UpdatedBy::Token,
+        );
+        let event = BackupCodec::new(&keys).encode_address(&record).unwrap();
+        let owner = "a".repeat(64);
+        repository
+            .stage_payment_address(
+                "example.com",
+                "alice",
+                &destination,
+                "$argon2id$example",
+                &record.address_key,
+                &event,
+                None,
+                Some(&owner),
+            )
+            .await
+            .unwrap();
+        repository
+            .acknowledge_event(&event.id.to_string())
+            .await
+            .unwrap();
+
+        let managed = repository
+            .get_address_for_management("example.com", "alice")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(managed.owner_pubkey.as_deref(), Some(owner.as_str()));
+
+        let owned = repository.addresses_for_owner(&owner).await.unwrap();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].username, "alice");
+        assert_eq!(owned[0].domain, "example.com");
+        assert_eq!(owned[0].destination, "receiver@example.net");
+
+        assert!(
+            repository
+                .addresses_for_owner(&"b".repeat(64))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

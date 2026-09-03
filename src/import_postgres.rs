@@ -216,6 +216,7 @@ pub async fn import(
                 &record.address_key,
                 &event,
                 None,
+                None,
             )
             .await?;
         match publisher.publish(&event).await {

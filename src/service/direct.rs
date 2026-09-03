@@ -197,6 +197,7 @@ impl ILnaddrService for DirectLnaddrService {
                 &record.address_key,
                 &event,
                 None,
+                None,
             )
             .await?;
 
