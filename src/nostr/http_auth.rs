@@ -118,39 +118,44 @@ impl Default for Nip98ReplayGuard {
     }
 }
 
+/// Test helper: builds a `Authorization: Nostr <base64>` header value for a signed
+/// NIP-98 event with the given `url`, `method`, optional `payload` (request body) and
+/// `created_at` timestamp. Kept outside `mod tests` (but still `#[cfg(test)]`-gated) so
+/// other modules' test suites can reuse it via `crate::nostr::http_auth::auth_header`.
+#[cfg(test)]
+pub(crate) fn auth_header(
+    keys: &nostr_sdk::prelude::Keys,
+    url: &str,
+    method: &str,
+    payload: Option<&[u8]>,
+    created_at: u64,
+) -> String {
+    use nostr_sdk::prelude::{EventBuilder, Kind, Tag, Timestamp};
+
+    let mut tags = vec![
+        Tag::parse(["u", url]).unwrap(),
+        Tag::parse(["method", method]).unwrap(),
+    ];
+    if let Some(payload) = payload {
+        use sha2::{Digest, Sha256};
+        tags.push(Tag::parse(["payload", &hex::encode(Sha256::digest(payload))]).unwrap());
+    }
+    let event = EventBuilder::new(Kind::HttpAuth, "")
+        .tags(tags)
+        .custom_created_at(Timestamp::from_secs(created_at))
+        .sign_with_keys(keys)
+        .unwrap();
+    use base64::Engine;
+    format!(
+        "Nostr {}",
+        base64::engine::general_purpose::STANDARD.encode(serde_json::to_string(&event).unwrap())
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nostr_sdk::prelude::{EventBuilder, Keys, Kind, Tag, Timestamp};
-
-    #[cfg(test)]
-    pub fn auth_header(
-        keys: &Keys,
-        url: &str,
-        method: &str,
-        payload: Option<&[u8]>,
-        created_at: u64,
-    ) -> String {
-        let mut tags = vec![
-            Tag::parse(["u", url]).unwrap(),
-            Tag::parse(["method", method]).unwrap(),
-        ];
-        if let Some(payload) = payload {
-            use sha2::{Digest, Sha256};
-            tags.push(Tag::parse(["payload", &hex::encode(Sha256::digest(payload))]).unwrap());
-        }
-        let event = EventBuilder::new(Kind::HttpAuth, "")
-            .tags(tags)
-            .custom_created_at(Timestamp::from_secs(created_at))
-            .sign_with_keys(keys)
-            .unwrap();
-        use base64::Engine;
-        format!(
-            "Nostr {}",
-            base64::engine::general_purpose::STANDARD
-                .encode(serde_json::to_string(&event).unwrap())
-        )
-    }
 
     #[test]
     fn accepts_valid_header_and_rejects_tampering() {

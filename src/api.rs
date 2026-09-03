@@ -1,13 +1,16 @@
 use anyhow::Result;
 use axum::{
     Json,
-    extract::{ConnectInfo, Host, Path, Query, State},
+    body::Bytes,
+    extract::{ConnectInfo, Host, OriginalUri, Path, Query, State},
+    http::HeaderMap,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 
 use crate::AppState;
+use crate::api_v1::nip98_from_request;
 use crate::domain::{Domain, Username};
 use crate::nostr::announcement::well_known;
 use crate::service::{ManagementAuth, RegisterResponse};
@@ -151,17 +154,46 @@ pub async fn register_lnaddr_handler(
         .map(Json)
 }
 
+/// Resolves the `ManagementAuth` for a legacy `/lnaddress/{update,remove}` request: a
+/// valid NIP-98 header always wins (as `ManagementAuth::Owner`); otherwise the body's
+/// `authentication_token` is used (as `ManagementAuth::Token`); if neither is present,
+/// the request is unauthorized.
+fn resolve_management_auth(
+    state: &AppState,
+    headers: &HeaderMap,
+    method: &str,
+    uri: &OriginalUri,
+    raw_body: &[u8],
+    token: Option<String>,
+) -> Result<ManagementAuth, axum::http::StatusCode> {
+    match nip98_from_request(state, headers, method, uri, Some(raw_body)) {
+        Ok(Some(pubkey)) => Ok(ManagementAuth::Owner(pubkey)),
+        Ok(None) => token
+            .map(ManagementAuth::Token)
+            .ok_or(axum::http::StatusCode::UNAUTHORIZED),
+        Err(_) => Err(axum::http::StatusCode::UNAUTHORIZED),
+    }
+}
+
 pub async fn remove_lnaddr_handler(
     State(state): State<AppState>,
-    Json(payload): Json<RemoveRequest>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    raw_body: Bytes,
 ) -> Result<axum::http::StatusCode, axum::http::StatusCode> {
+    let payload: RemoveRequest =
+        serde_json::from_slice(&raw_body).map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
+    let auth = resolve_management_auth(
+        &state,
+        &headers,
+        "DELETE",
+        &uri,
+        &raw_body,
+        payload.authentication_token,
+    )?;
     state
         .service
-        .remove_lnaddr(
-            &payload.domain,
-            &payload.username,
-            &ManagementAuth::Token(payload.authentication_token),
-        )
+        .remove_lnaddr(&payload.domain, &payload.username, &auth)
         .await
         .map_err(|_| axum::http::StatusCode::UNAUTHORIZED)?;
 
@@ -173,20 +205,33 @@ pub struct UpdateRequest {
     pub domain: String,
     pub username: String,
     pub destination: String,
-    pub authentication_token: String,
+    #[serde(default)]
+    pub authentication_token: Option<String>,
 }
 
 pub async fn update_lnaddr_handler(
     State(state): State<AppState>,
-    Json(payload): Json<UpdateRequest>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    raw_body: Bytes,
 ) -> Result<Json<Value>, axum::http::StatusCode> {
+    let payload: UpdateRequest =
+        serde_json::from_slice(&raw_body).map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
+    let auth = resolve_management_auth(
+        &state,
+        &headers,
+        "PUT",
+        &uri,
+        &raw_body,
+        payload.authentication_token,
+    )?;
     state
         .service
         .update_lnaddr(
             &payload.domain,
             &payload.username,
             &payload.destination,
-            &ManagementAuth::Token(payload.authentication_token),
+            &auth,
         )
         .await
         .map(|active| Json(json!({ "active": active })))
@@ -204,7 +249,8 @@ pub struct RegisterRequest {
 pub struct RemoveRequest {
     pub domain: String,
     pub username: String,
-    pub authentication_token: String,
+    #[serde(default)]
+    pub authentication_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -11,7 +11,7 @@ use api::{
     liveness_handler, readiness_handler, register_lnaddr_handler, remove_lnaddr_handler,
     tailwind_asset_handler, update_lnaddr_handler, well_known_announcement_handler,
 };
-use api_v1::{quote_v1, register_start_v1, register_status_v1, register_v1};
+use api_v1::{addresses_v1, quote_v1, register_start_v1, register_status_v1, register_v1};
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -22,6 +22,7 @@ use config::Config;
 use configuration::ConfigurationManager;
 use crypto::{RootSecret, ServiceKeys};
 use nostr::announcement::AnnouncementWorker;
+use nostr::http_auth::Nip98ReplayGuard;
 use nostr::publisher::{NostrPublisher, OutboxWorker, Publisher};
 use nostr::restore;
 use registration::RegistrationManager;
@@ -66,6 +67,7 @@ pub struct AppState {
     pub registration_manager: Arc<RegistrationManager>,
     pub publisher: Publisher,
     pub nostr: Arc<NostrPublisher>,
+    pub nip98_guard: Arc<Nip98ReplayGuard>,
 }
 
 pub async fn serve(config: &Config) -> Result<()> {
@@ -158,6 +160,7 @@ async fn normal_router(
         registration_manager,
         publisher,
         nostr,
+        nip98_guard: Arc::new(Nip98ReplayGuard::new()),
     };
 
     Ok(build_router(app_state))
@@ -210,6 +213,7 @@ pub(crate) fn build_router(app_state: AppState) -> Router {
         .route("/api/v1/register", post(register_v1))
         .route("/api/v1/register/start", post(register_start_v1))
         .route("/api/v1/register/:id", get(register_status_v1))
+        .route("/api/v1/addresses", get(addresses_v1))
         .layer(cors_layer());
 
     let private = Router::new()
@@ -320,6 +324,7 @@ pub async fn test_app_state(
         registration_manager,
         publisher,
         nostr,
+        nip98_guard: Arc::new(Nip98ReplayGuard::new()),
     })
 }
 

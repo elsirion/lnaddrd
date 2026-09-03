@@ -1,10 +1,8 @@
 use axum::{
     Json,
-    extract::{
-        ConnectInfo, Path, Query, State,
-        rejection::{JsonRejection, QueryRejection},
-    },
-    http::StatusCode,
+    body::Bytes,
+    extract::{ConnectInfo, OriginalUri, Path, Query, State, rejection::QueryRejection},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
@@ -26,6 +24,82 @@ fn rejection_response(rejection: QuoteRejection) -> Response {
         _ => StatusCode::BAD_REQUEST,
     };
     api_error(status, rejection.code())
+}
+
+fn unauthorized() -> Response {
+    api_error(StatusCode::UNAUTHORIZED, "unauthorized")
+}
+
+/// Verifies an optional NIP-98 `Authorization` header against `state`'s configured
+/// public origin and `uri`/`method`/`body`.
+///
+/// - `Ok(None)` — no `Authorization` header was present; caller should fall back to
+///   whatever other authentication scheme it supports (or reject outright).
+/// - `Ok(Some(pubkey))` — the header carried a valid, non-replayed NIP-98 event; the
+///   64-char lowercase hex signer pubkey is returned as-is.
+/// - `Err(response)` — the header was present but invalid (bad signature, wrong
+///   URL/method/payload, stale, or replayed), or `public_base_url` is unset. Always a
+///   401 `{"error":"unauthorized"}` response.
+pub fn nip98_from_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    method: &str,
+    uri: &OriginalUri,
+    body: Option<&[u8]>,
+) -> Result<Option<String>, Response> {
+    let header = match headers.get(axum::http::header::AUTHORIZATION) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let header = header.to_str().map_err(|_| unauthorized())?;
+
+    let base_url = state
+        .config
+        .public_base_url
+        .as_deref()
+        .ok_or_else(unauthorized)?;
+    let origin =
+        crate::nostr::announcement::normalized_origin(base_url).map_err(|_| unauthorized())?;
+    let url = format!(
+        "{origin}{}",
+        uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+    );
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let auth = crate::nostr::http_auth::verify_nip98(header, method, &url, body, now)
+        .map_err(|_| unauthorized())?;
+
+    if !state.nip98_guard.check_and_insert(&auth.event_id, now) {
+        return Err(unauthorized());
+    }
+
+    Ok(Some(auth.pubkey))
+}
+
+pub async fn addresses_v1(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+) -> Response {
+    match nip98_from_request(&state, &headers, "GET", &uri, None) {
+        Ok(Some(pubkey)) => match state.repository.addresses_for_owner(&pubkey).await {
+            Ok(addresses) => Json(json!({
+                "addresses": addresses.iter().map(|a| json!({
+                    "domain": a.domain,
+                    "username": a.username,
+                    "destination": a.destination,
+                })).collect::<Vec<_>>()
+            }))
+            .into_response(),
+            Err(_) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+        },
+        Ok(None) => api_error(StatusCode::UNAUTHORIZED, "unauthorized"),
+        Err(response) => response,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,12 +157,36 @@ fn validate_owner_pubkey(value: &Option<String>) -> Result<(), Response> {
     Ok(())
 }
 
+/// Resolves the owner for a registration request: a valid NIP-98 header always wins,
+/// and if the body also carries an `owner_pubkey` the two must agree (else
+/// `owner_mismatch`). With no NIP-98 header, the body's `owner_pubkey` (if any) is used
+/// as-is.
+fn resolve_owner(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &OriginalUri,
+    raw_body: &[u8],
+    body_owner_pubkey: &Option<String>,
+) -> Result<Option<String>, Response> {
+    match nip98_from_request(state, headers, "POST", uri, Some(raw_body))? {
+        Some(pubkey) => match body_owner_pubkey {
+            Some(existing) if existing != &pubkey => {
+                Err(api_error(StatusCode::BAD_REQUEST, "owner_mismatch"))
+            }
+            _ => Ok(Some(pubkey)),
+        },
+        None => Ok(body_owner_pubkey.clone()),
+    }
+}
+
 pub async fn register_v1(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    body: Result<Json<RegisterBody>, JsonRejection>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    raw_body: Bytes,
 ) -> Response {
-    let Json(body) = match body {
+    let body: RegisterBody = match serde_json::from_slice(&raw_body) {
         Ok(body) => body,
         Err(_) => return api_error(StatusCode::BAD_REQUEST, "invalid_input"),
     };
@@ -102,6 +200,10 @@ pub async fn register_v1(
     if let Err(response) = validate_owner_pubkey(&body.owner_pubkey) {
         return response;
     }
+    let owner = match resolve_owner(&state, &headers, &uri, &raw_body, &body.owner_pubkey) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
     match state
         .registration_manager
         .quote_checked(&body.domain, &body.username)
@@ -118,7 +220,7 @@ pub async fn register_v1(
             &body.domain,
             &body.username,
             &body.destination,
-            body.owner_pubkey.as_deref(),
+            owner.as_deref(),
         )
         .await
     {
@@ -135,9 +237,11 @@ pub async fn register_v1(
 pub async fn register_start_v1(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    body: Result<Json<RegisterBody>, JsonRejection>,
+    headers: HeaderMap,
+    uri: OriginalUri,
+    raw_body: Bytes,
 ) -> Response {
-    let Json(body) = match body {
+    let body: RegisterBody = match serde_json::from_slice(&raw_body) {
         Ok(body) => body,
         Err(_) => return api_error(StatusCode::BAD_REQUEST, "invalid_input"),
     };
@@ -151,6 +255,10 @@ pub async fn register_start_v1(
     if let Err(response) = validate_owner_pubkey(&body.owner_pubkey) {
         return response;
     }
+    let owner = match resolve_owner(&state, &headers, &uri, &raw_body, &body.owner_pubkey) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
     match state
         .registration_manager
         .quote_checked(&body.domain, &body.username)
@@ -167,7 +275,7 @@ pub async fn register_start_v1(
             &body.domain,
             &body.username,
             &body.destination,
-            body.owner_pubkey.as_deref(),
+            owner.as_deref(),
         )
         .await
     {
@@ -281,9 +389,13 @@ mod tests {
         direct_service.set_destination_validator(std::sync::Arc::new(NoopDestinationValidator));
         let service = direct_service.into_dyn();
 
-        let state = crate::test_app_state(repository, &domains, publisher, service)
+        let mut state = crate::test_app_state(repository, &domains, publisher, service)
             .await
             .unwrap();
+        state.config = std::sync::Arc::new(crate::config::Config {
+            public_base_url: Some("https://example.com".to_owned()),
+            ..(*state.config).clone()
+        });
 
         // keep the directory alive for the lifetime of the router by leaking it; the
         // temp files are only needed for the duration of the test process.
@@ -464,6 +576,145 @@ mod tests {
             .await
             .unwrap();
         assert!(admin.headers().get("access-control-allow-origin").is_none());
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[tokio::test]
+    async fn addresses_requires_and_honors_nip98() {
+        use crate::nostr::http_auth::auth_header;
+        use nostr_sdk::prelude::Keys;
+
+        let app = test_router().await;
+        let keys = Keys::generate();
+        let other_keys = Keys::generate();
+
+        let register_body = json!({
+            "domain": "example.com",
+            "username": "alice",
+            "destination": "receiver@example.net",
+        })
+        .to_string();
+        let register_header = auth_header(
+            &keys,
+            "https://example.com/api/v1/register",
+            "POST",
+            Some(register_body.as_bytes()),
+            now_secs(),
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/register")
+                    .header("content-type", "application/json")
+                    .header("authorization", register_header)
+                    .body(Body::from(register_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["address"], "alice@example.com");
+
+        let get_header = auth_header(
+            &keys,
+            "https://example.com/api/v1/addresses",
+            "GET",
+            None,
+            now_secs(),
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/addresses")
+                    .header("authorization", get_header)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = read_json(response).await;
+        let addresses = body["addresses"].as_array().unwrap();
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0]["domain"], "example.com");
+        assert_eq!(addresses[0]["username"], "alice");
+        assert_eq!(addresses[0]["destination"], "receiver@example.net");
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/addresses")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let other_header = auth_header(
+            &other_keys,
+            "https://example.com/api/v1/addresses",
+            "GET",
+            None,
+            now_secs(),
+        );
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/addresses")
+                    .header("authorization", other_header)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["addresses"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn owner_mismatch_is_rejected() {
+        use crate::nostr::http_auth::auth_header;
+        use nostr_sdk::prelude::Keys;
+
+        let app = test_router().await;
+        let keys_a = Keys::generate();
+        let keys_b = Keys::generate();
+
+        let register_body = json!({
+            "domain": "example.com",
+            "username": "bob",
+            "destination": "receiver@example.net",
+            "owner_pubkey": keys_b.public_key().to_string(),
+        })
+        .to_string();
+        let register_header = auth_header(
+            &keys_a,
+            "https://example.com/api/v1/register",
+            "POST",
+            Some(register_body.as_bytes()),
+            now_secs(),
+        );
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/register")
+                    .header("content-type", "application/json")
+                    .header("authorization", register_header)
+                    .body(Body::from(register_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["error"], "owner_mismatch");
     }
 
     #[tokio::test]
