@@ -126,9 +126,12 @@ outages); the address still resolves from local state either way.
 Errors: `invalid_input` (also returned for a downstream registration failure,
 e.g. an unreachable or invalid `destination`), `unsupported_domain`, `taken`,
 `reserved`, `length_disabled`, `payment_required` (the name is not free; use
-`/api/v1/register/start`), `owner_mismatch`, `rate_limited`. This endpoint
-shares a 10-requests-per-minute-per-IP bucket with `/api/v1/register/start`
-and the legacy `POST /lnaddress/register`.
+`/api/v1/register/start`), `owner_mismatch`, `unauthorized` (an `Authorization`
+header was present but failed NIP-98 verification — this endpoint runs the
+same NIP-98 check as `owner_pubkey` resolution even though NIP-98 itself is
+optional here), `rate_limited`. This endpoint shares a
+10-requests-per-minute-per-IP bucket with `/api/v1/register/start` and the
+legacy `POST /lnaddress/register`.
 
 ## Paid registration
 
@@ -176,8 +179,10 @@ invoice's own expiry, if shorter).
 Errors: `invalid_input` (also returned for a downstream failure, e.g. the
 policy's recipient rejecting the invoice request), `unsupported_domain`,
 `taken`, `reserved`, `length_disabled`, `free_registration` (the name is
-free; use `POST /api/v1/register`), `owner_mismatch`, `rate_limited` (same
-shared bucket as free registration, above).
+free; use `POST /api/v1/register`), `owner_mismatch`, `unauthorized` (an
+`Authorization` header was present but failed NIP-98 verification, for the
+same reason as in free registration, above), `rate_limited` (same shared
+bucket as free registration, above).
 
 ### Poll
 
@@ -340,9 +345,15 @@ checked in this order:
    Argon2id hash of the token issued at registration time.
 
 If neither is present (no header and no token in the body), the request is
-`401` with an empty body. A NIP-98 header that is present but invalid is
-always rejected outright — it never falls back to the body token, even if
-the token is otherwise valid.
+`401` with an empty body. A NIP-98 header that is present but
+cryptographically invalid (bad signature, wrong `u`/`method`/`payload`,
+stale, replayed) is always rejected outright with `401` — it never falls
+back to the body token, even if the token is otherwise valid. A header or
+token that is present, well-formed, and *resolves* (so `resolve_management_auth`
+succeeds) but names the wrong owner or the wrong token is a separate check,
+made by the service layer once it loads the address — and its status code
+differs per endpoint: `400` on Update, `401` on Remove. See each endpoint
+below.
 
 ### Update
 
@@ -380,8 +391,16 @@ Response `200 OK`:
 ```
 
 `active` has the same meaning as in [free registration](#free-registration).
-Errors: `400` (malformed JSON, an invalid `destination`, or the address is
-not currently active), `401` (missing/invalid/mismatched authentication).
+
+Errors: `401` (no `Authorization` header and no `authentication_token`, or
+an `Authorization` header that is present but fails NIP-98 verification —
+`resolve_management_auth` itself failed). `400` for every other failure:
+malformed JSON, an invalid `destination`, the address does not exist, the
+address exists but is not currently active, **or** a well-formed
+`authentication_token`/NIP-98 pubkey that simply names the wrong owner (a
+wrong token or a pubkey that isn't the address's owner) — the service layer
+maps all of these to a blanket `400`, so a caller cannot distinguish "wrong
+credentials" from "bad request" on this endpoint by status code alone.
 
 ### Remove
 
@@ -456,7 +475,7 @@ endpoints never return this JSON body — see [Management](#management).)
 | `invalid_input` | 400 | Malformed JSON body, invalid/missing query parameters, a malformed `domain`/`username`, an invalid `owner_pubkey` (not 64 lowercase hex characters), **or** a downstream registration failure (e.g. an unreachable `destination`, an invoice request rejected by the recipient). |
 | `unsupported_domain` | 400 | `domain` is not one of the service's configured domains. |
 | `length_disabled` | 400 | The payment policy has no tier covering this username length. |
-| `taken` | 409 | The name is already registered (or a completed/publishing attempt holds it). |
+| `taken` | 409 | The name is already registered, or an attempt already claims it (state `completed`, `publishing`, or `pending_payment`). |
 | `reserved` | 409 | The name is on the service's reserved list. |
 | `payment_required` | 400 | `POST /api/v1/register` was called for a name whose quoted price is non-zero. |
 | `free_registration` | 400 | `POST /api/v1/register/start` was called for a name whose quoted price is zero. |

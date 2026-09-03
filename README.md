@@ -247,9 +247,11 @@ in the [registration API microstandard](docs/protocol/03-registration-api.md):
 - `PUT /lnaddress/update` / `DELETE /lnaddress/remove` — legacy management, by bearer token or NIP-98.
 - `POST /lnaddress/register` — legacy token-only free registration.
 
-The `/api/v1` endpoints optionally accept a NIP-98 `Authorization` header to
-bind a registration to a Nostr public key, advertised via the
-`registration-api-v1` and `nostr-auth` announcement capabilities.
+Several `/api/v1` endpoints accept a NIP-98 `Authorization` header to bind a
+registration to a Nostr public key or to prove address ownership; support is
+advertised via the `registration-api-v1` and `nostr-auth` announcement
+capabilities. NIP-98 handling differs per endpoint (optional, required, or
+unused) — see doc 03 for the exact rules.
 
 ## Legacy PostgreSQL import
 
