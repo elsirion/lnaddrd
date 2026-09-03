@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LN Address Marketplace</title>
+  <link rel="stylesheet" href="assets/flowbite-1.7.0.min.css">
+  <script src="assets/tailwindcss-3.4.17.js"></script>
+  <script src="assets/flowbite-1.7.0.min.js"></script>
+  <script src="assets/nostr-tools-2.10.4.bundle.js"></script>
+  <script src="assets/qrcode-generator-1.4.4.min.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen text-gray-900">
+  <main class="mx-auto max-w-5xl p-4 sm:p-6 lg:p-8 space-y-6">
+    <header class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <h1 class="text-3xl font-bold tracking-tight">LN Address Marketplace</h1>
+        <p class="mt-1 text-sm text-gray-500">Operators discovered over Nostr. Announcements are claims, not endorsements.</p>
+      </div>
+      <button id="connect-nostr" class="text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 font-medium rounded-lg text-sm px-4 py-2">Connect Nostr</button>
+    </header>
+    <section id="relay-section" class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+      <h2 class="text-sm font-semibold text-gray-700">Discovery relays</h2>
+      <div id="relay-editor" class="mt-2 flex flex-wrap items-center gap-2"></div>
+      <div id="relay-status" class="mt-2 flex flex-wrap gap-2 text-xs"></div>
+    </section>
+    <nav class="flex gap-4 border-b border-gray-200 text-sm font-medium">
+      <button data-tab="browse" class="tab-btn border-b-2 border-blue-700 px-1 pb-2 text-blue-700">Browse</button>
+      <button data-tab="manage" class="tab-btn border-b-2 border-transparent px-1 pb-2 text-gray-500 hover:text-gray-700">Manage</button>
+    </nav>
+    <section id="operators" class="grid gap-4 sm:grid-cols-2"></section>
+    <section id="manage" class="hidden space-y-4"></section>
+  </main>
+  <div id="modal-root"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

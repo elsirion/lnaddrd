@@ -23,3 +23,7 @@ clippy:
 
 test:
     cargo test --all
+
+# Serve the static marketplace on http://localhost:8081
+marketplace-serve:
+    python3 -m http.server 8081 -d marketplace
