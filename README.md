@@ -233,6 +233,24 @@ lnaddrd --nostr-relays wss://relay.example discover --json
 Discovery is not federation or failover. The command verifies current domain
 control, but operators still require an independent trust policy.
 
+## HTTP API
+
+Alongside the HTML registration UI, `lnaddrd` exposes a JSON API under
+`/api/v1` (plus legacy management routes under `/lnaddress`), fully specified
+in the [registration API microstandard](docs/protocol/03-registration-api.md):
+
+- `GET /api/v1/register/quote` — price a domain/username without reserving it.
+- `POST /api/v1/register` — register a free name immediately.
+- `POST /api/v1/register/start` — start a paid registration and receive a BOLT11 invoice.
+- `GET /api/v1/register/:id` — poll a paid registration attempt's status.
+- `GET /api/v1/addresses` — list addresses owned by a NIP-98-authenticated pubkey.
+- `PUT /lnaddress/update` / `DELETE /lnaddress/remove` — legacy management, by bearer token or NIP-98.
+- `POST /lnaddress/register` — legacy token-only free registration.
+
+The `/api/v1` endpoints optionally accept a NIP-98 `Authorization` header to
+bind a registration to a Nostr public key, advertised via the
+`registration-api-v1` and `nostr-auth` announcement capabilities.
+
 ## Legacy PostgreSQL import
 
 Build the one-time importer with `--features postgres-import`. Stop the old
