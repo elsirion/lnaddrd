@@ -88,7 +88,7 @@ const ADMIN_POLICY_JS: &str = r#"
     var row = document.createElement('div');
     row.dataset.tierRow = '';
     row.className = 'grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end';
-    row.innerHTML = '<div><label class="mb-2 block text-xs font-medium text-gray-700">Maximum username length</label><input data-tier-length type="number" min="1" max="64" step="1" required value="1" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><div><label class="mb-2 block text-xs font-medium text-gray-700">Price (sats)</label><input data-tier-price type="number" min="0" step="0.001" required value="0" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50">Remove</button>';
+    row.innerHTML = '<div><label class="mb-2 block text-xs font-medium text-gray-700">Username shorter than</label><input data-tier-length type="number" min="1" max="64" step="1" required value="1" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><div><label class="mb-2 block text-xs font-medium text-gray-700">Price (sats)</label><input data-tier-price type="number" min="0" step="0.001" required value="0" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50">Remove</button>';
     form.querySelector('[data-tier-list]').appendChild(row);
     row.querySelector('[data-tier-length]').focus();
     syncTiers(form, false);
@@ -1029,7 +1029,7 @@ fn tier_row(max_length: Option<u16>, price_msat: Option<u64>) -> maud::Markup {
     let price_sats = price_msat.map(format_sats);
     html! {
         div data-tier-row class="grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end" {
-            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Maximum username length" } input data-tier-length type="number" min="1" max="64" step="1" required value=[max_length.map(|value| value.to_string())] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
+            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Username shorter than" } input data-tier-length type="number" min="1" max="64" step="1" required value=[max_length.map(|value| value.to_string())] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
             div { label class="mb-2 block text-xs font-medium text-gray-700" { "Price (sats)" } input data-tier-price type="number" min="0" step="0.001" required value=[price_sats] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
             button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50" { "Remove" }
         }
@@ -1280,6 +1280,7 @@ mod tests {
         assert!(markup.contains("data-add-tier"));
         assert!(markup.contains("/admin/payment-policy/validate"));
         assert!(markup.contains("data-save-pricing"));
+        assert!(markup.contains("Username shorter than"));
         assert!(markup.contains("Price (sats)"));
         assert!(markup.contains("value=\"10\""));
         assert!(!markup.contains("textarea"));
