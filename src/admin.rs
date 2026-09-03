@@ -46,6 +46,10 @@ const ADMIN_POLICY_JS: &str = r#"
 
   function syncTiers(form, requestCheck) {
     var rows = Array.from(form.querySelectorAll('[data-tier-row]'));
+    rows.sort(function (a, b) {
+      return Number(a.querySelector('[data-tier-length]').value) - Number(b.querySelector('[data-tier-length]').value);
+    });
+    rows.forEach(function (row) { form.querySelector('[data-tier-list]').appendChild(row); });
     var error = form.querySelector('[data-tier-error]');
     var values = [];
     var previousLength = 0;
@@ -55,10 +59,11 @@ const ADMIN_POLICY_JS: &str = r#"
       var lengthValue = row.querySelector('[data-tier-length]').value;
       var priceValue = row.querySelector('[data-tier-price]').value;
       var length = Number(lengthValue);
-      var price = Number(priceValue);
+      var priceSats = Number(priceValue);
+      var price = Math.round(priceSats * 1000);
       if (lengthValue === '' || priceValue === '') message ||= 'Complete both fields for every tier.';
       if (!Number.isInteger(length) || length < 1 || length > 64) message ||= 'Maximum length must be a whole number from 1 to 64.';
-      if (!Number.isSafeInteger(price) || price < 0) message ||= 'Price must be a non-negative whole number of millisatoshis.';
+      if (!Number.isFinite(priceSats) || priceSats < 0 || !Number.isSafeInteger(price) || Math.abs(price / 1000 - priceSats) > 0.0000001) message ||= 'Price must be a non-negative sat amount with at most three decimals.';
       if (length <= previousLength) message ||= 'Tier lengths must be strictly increasing.';
       if (price > previousPrice) message ||= 'Prices must stay the same or decrease for longer names.';
       previousLength = length;
@@ -83,7 +88,7 @@ const ADMIN_POLICY_JS: &str = r#"
     var row = document.createElement('div');
     row.dataset.tierRow = '';
     row.className = 'grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end';
-    row.innerHTML = '<div><label class="mb-2 block text-xs font-medium text-gray-700">Maximum username length</label><input data-tier-length type="number" min="1" max="64" step="1" required class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><div><label class="mb-2 block text-xs font-medium text-gray-700">Price (msat)</label><input data-tier-price type="number" min="0" step="1" required class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50">Remove</button>';
+    row.innerHTML = '<div><label class="mb-2 block text-xs font-medium text-gray-700">Maximum username length</label><input data-tier-length type="number" min="1" max="64" step="1" required value="1" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><div><label class="mb-2 block text-xs font-medium text-gray-700">Price (sats)</label><input data-tier-price type="number" min="0" step="0.001" required value="0" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50">Remove</button>';
     form.querySelector('[data-tier-list]').appendChild(row);
     row.querySelector('[data-tier-length]').focus();
     syncTiers(form, false);
@@ -613,6 +618,36 @@ pub async fn address_delete_submit(
     if managed.state != "active" {
         return configuration_error(anyhow::anyhow!("Only active addresses can be deleted"));
     }
+    let domain = match form.domain.parse::<Domain>() {
+        Ok(domain) => domain,
+        Err(error) => return configuration_error(error),
+    };
+    let username = match form.username.parse::<Username>() {
+        Ok(username) => username,
+        Err(error) => return configuration_error(error),
+    };
+    let reservation = match state
+        .configuration_manager
+        .set_reserved(domain, username, true)
+        .await
+    {
+        Ok(update) => update,
+        Err(error) => return configuration_error(error),
+    };
+    if !reservation.active {
+        return Html(
+            html! { p role="status" { "Address was not deleted because its reservation is still waiting for relay acknowledgement. Retry deletion after the configuration backup succeeds." } }
+                .into_string(),
+        )
+        .into_response();
+    }
+    let configuration = match state.configuration_manager.current().await {
+        Ok(configuration) => configuration,
+        Err(error) => return configuration_error(error),
+    };
+    if let Err(error) = publish_announcement(&state, &configuration).await {
+        return configuration_error(error);
+    }
     let now = match u64::try_from(unix_now().unwrap_or_default()) {
         Ok(value) => value,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -912,14 +947,14 @@ fn configuration_markup(
                         div data-tier-list class="mt-3 space-y-3" {
                             @if let Some(policy) = &domain_configuration.payment_policy {
                                 @for tier in &policy.tiers { (tier_row(Some(tier.max_length), Some(tier.price_msat))) }
-                            } @else { (tier_row(Some(5), None)) }
+                            } @else { (tier_row(Some(1), Some(0))) }
                         }
                         input type="hidden" name="tiers" data-tiers-value;
                         p data-tier-error class="mt-2 hidden text-sm text-red-700" {}
                     }
                     p class="text-sm text-gray-500" { "The check requests an unpaid invoice in the lowest configured amount and verifies its LUD-21 endpoint." }
                     }
-                    button type="submit" data-save-pricing class=(primary_button()) disabled[domain_configuration.payment_policy.is_some()] { "Save pricing" }
+                    div { button type="submit" data-save-pricing class=(primary_button()) disabled[domain_configuration.payment_policy.is_some()] { "Save pricing" } }
                 }
                 }
                 section class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm" {
@@ -991,12 +1026,23 @@ pub(crate) fn admin_head(title: &str) -> maud::Markup {
 }
 
 fn tier_row(max_length: Option<u16>, price_msat: Option<u64>) -> maud::Markup {
+    let price_sats = price_msat.map(format_sats);
     html! {
         div data-tier-row class="grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end" {
             div { label class="mb-2 block text-xs font-medium text-gray-700" { "Maximum username length" } input data-tier-length type="number" min="1" max="64" step="1" required value=[max_length.map(|value| value.to_string())] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
-            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Price (msat)" } input data-tier-price type="number" min="0" step="1" required value=[price_msat.map(|value| value.to_string())] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
+            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Price (sats)" } input data-tier-price type="number" min="0" step="0.001" required value=[price_sats] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
             button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50" { "Remove" }
         }
+    }
+}
+
+fn format_sats(msat: u64) -> String {
+    if msat % 1000 == 0 {
+        (msat / 1000).to_string()
+    } else {
+        format!("{}.{:03}", msat / 1000, msat % 1000)
+            .trim_end_matches('0')
+            .to_owned()
     }
 }
 
@@ -1234,7 +1280,17 @@ mod tests {
         assert!(markup.contains("data-add-tier"));
         assert!(markup.contains("/admin/payment-policy/validate"));
         assert!(markup.contains("data-save-pricing"));
+        assert!(markup.contains("Price (sats)"));
+        assert!(markup.contains("value=\"10\""));
         assert!(!markup.contains("textarea"));
+    }
+
+    #[test]
+    fn millisatoshis_are_rendered_as_exact_sat_values() {
+        assert_eq!(format_sats(0), "0");
+        assert_eq!(format_sats(100_000), "100");
+        assert_eq!(format_sats(100_100), "100.1");
+        assert_eq!(format_sats(100_001), "100.001");
     }
 
     fn auth() -> (tempfile::TempDir, AdminAuth) {
