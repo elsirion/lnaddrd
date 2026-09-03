@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use crate::AppState;
 use crate::domain::{Domain, Username};
 use crate::nostr::announcement::well_known;
-use crate::service::RegisterResponse;
+use crate::service::{ManagementAuth, RegisterResponse};
 
 const HTMX_JS: &str = include_str!("../assets/htmx-4.0.0.min.js");
 const TAILWIND_JS: &str = include_str!("../assets/tailwindcss-3.4.17.js");
@@ -145,7 +145,7 @@ pub async fn register_lnaddr_handler(
     }
     state
         .service
-        .register_lnaddr(&payload.domain, &payload.username, &payload.lnurl)
+        .register_lnaddr(&payload.domain, &payload.username, &payload.lnurl, None)
         .await
         .map_err(|_| axum::http::StatusCode::BAD_REQUEST)
         .map(Json)
@@ -160,7 +160,7 @@ pub async fn remove_lnaddr_handler(
         .remove_lnaddr(
             &payload.domain,
             &payload.username,
-            &payload.authentication_token,
+            &ManagementAuth::Token(payload.authentication_token),
         )
         .await
         .map_err(|_| axum::http::StatusCode::UNAUTHORIZED)?;
@@ -186,7 +186,7 @@ pub async fn update_lnaddr_handler(
             &payload.domain,
             &payload.username,
             &payload.destination,
-            &payload.authentication_token,
+            &ManagementAuth::Token(payload.authentication_token),
         )
         .await
         .map(|active| Json(json!({ "active": active })))

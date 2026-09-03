@@ -189,6 +189,7 @@ impl RegistrationManager {
         domain: &str,
         username: &str,
         destination: &str,
+        owner_pubkey: Option<&str>,
     ) -> Result<StartedRegistration> {
         let _guard = self.mutation_lock.lock().await;
         self.prune_attempts().await?;
@@ -267,7 +268,7 @@ impl RegistrationManager {
                 expires_at,
                 created_at: now,
                 updated_at: now,
-                owner_pubkey: None,
+                owner_pubkey: owner_pubkey.map(str::to_owned),
             })
             .await?;
         Ok(StartedRegistration {
@@ -346,7 +347,8 @@ impl RegistrationManager {
             policy_fingerprint: attempt.policy_fingerprint.clone(),
             payment_hash: attempt.payment_hash.clone(),
             paid_at: u64::try_from(now)?,
-        });
+        })
+        .with_owner(attempt.owner_pubkey.clone());
         let event = BackupCodec::new(&self.keys).encode_address(&record)?;
         self.repository
             .stage_payment_address(
@@ -357,7 +359,7 @@ impl RegistrationManager {
                 &record.address_key,
                 &event,
                 Some(id),
-                None,
+                attempt.owner_pubkey.as_deref(),
             )
             .await?;
         match self.publisher.publish(&event).await {

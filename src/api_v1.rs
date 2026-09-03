@@ -114,7 +114,12 @@ pub async fn register_v1(
     }
     match state
         .service
-        .register_lnaddr(&body.domain, &body.username, &body.destination)
+        .register_lnaddr(
+            &body.domain,
+            &body.username,
+            &body.destination,
+            body.owner_pubkey.as_deref(),
+        )
         .await
     {
         Ok(response) => Json(json!({
@@ -158,7 +163,12 @@ pub async fn register_start_v1(
     }
     match state
         .registration_manager
-        .start(&body.domain, &body.username, &body.destination)
+        .start(
+            &body.domain,
+            &body.username,
+            &body.destination,
+            body.owner_pubkey.as_deref(),
+        )
         .await
     {
         Ok(started) => Json(json!({

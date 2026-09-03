@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::{ILnaddrService, LnaddrService, RegisterResponse};
+use super::{ILnaddrService, LnaddrService, ManagementAuth, RegisterResponse};
 use crate::crypto::ServiceKeys;
 use crate::domain::{Domain, LightningAddress, Username};
 use crate::nostr::{
@@ -141,6 +141,7 @@ impl ILnaddrService for DirectLnaddrService {
         domain: &str,
         username: &str,
         destination: &str,
+        owner_pubkey: Option<&str>,
     ) -> Result<RegisterResponse> {
         let domain = domain.parse::<Domain>()?;
         let username = username.parse::<Username>()?;
@@ -186,7 +187,8 @@ impl ILnaddrService for DirectLnaddrService {
             now,
             now,
             UpdatedBy::Token,
-        );
+        )
+        .with_owner(owner_pubkey.map(str::to_owned));
         let event = BackupCodec::new(&self.keys).encode_address(&record)?;
         self.repo
             .stage_payment_address(
@@ -197,7 +199,7 @@ impl ILnaddrService for DirectLnaddrService {
                 &record.address_key,
                 &event,
                 None,
-                None,
+                owner_pubkey,
             )
             .await?;
 
@@ -228,7 +230,7 @@ impl ILnaddrService for DirectLnaddrService {
         &self,
         domain: &str,
         username: &str,
-        authentication_token: &str,
+        auth: &ManagementAuth,
     ) -> Result<()> {
         let domain = domain.parse::<Domain>()?;
         let username = username.parse::<Username>()?;
@@ -237,11 +239,7 @@ impl ILnaddrService for DirectLnaddrService {
             .get_address_for_management(domain.as_str(), username.as_str())
             .await?
             .ok_or_else(|| anyhow::anyhow!("Address not found"))?;
-        let parsed_hash = PasswordHash::new(&managed.authentication_token_hash)
-            .map_err(|_| anyhow::anyhow!("Invalid management token"))?;
-        Argon2::default()
-            .verify_password(authentication_token.as_bytes(), &parsed_hash)
-            .map_err(|_| anyhow::anyhow!("Invalid management token"))?;
+        let updated_by = verify_management_auth(&managed, auth)?;
 
         let record = AddressRecord::tombstone(
             &self.keys,
@@ -249,7 +247,7 @@ impl ILnaddrService for DirectLnaddrService {
             managed.revision + 1,
             managed.created_at,
             unix_now()?,
-            UpdatedBy::Token,
+            updated_by,
         );
         let event = BackupCodec::new(&self.keys).encode_address(&record)?;
         self.repo
@@ -276,7 +274,7 @@ impl ILnaddrService for DirectLnaddrService {
         domain: &str,
         username: &str,
         destination: &str,
-        authentication_token: &str,
+        auth: &ManagementAuth,
     ) -> Result<bool> {
         let domain = domain.parse::<Domain>()?;
         let username = username.parse::<Username>()?;
@@ -286,11 +284,7 @@ impl ILnaddrService for DirectLnaddrService {
             .await?
             .context("Address not found")?;
         ensure!(managed.state == "active", "Address is not active");
-        let parsed_hash = PasswordHash::new(&managed.authentication_token_hash)
-            .map_err(|_| anyhow::anyhow!("Invalid management token"))?;
-        Argon2::default()
-            .verify_password(authentication_token.as_bytes(), &parsed_hash)
-            .map_err(|_| anyhow::anyhow!("Invalid management token"))?;
+        let updated_by = verify_management_auth(&managed, auth)?;
         let destination = DestinationPaymentAddress::from_str(destination)?;
         self.destination_validator.validate(&destination).await?;
         let now = unix_now()?;
@@ -315,8 +309,9 @@ impl ILnaddrService for DirectLnaddrService {
             managed.authentication_token_hash,
             managed.created_at,
             now,
-            UpdatedBy::Token,
-        );
+            updated_by,
+        )
+        .with_owner(managed.owner_pubkey.clone());
         if let Some(registration) = registration {
             record = record.with_registration(registration);
         }
@@ -344,6 +339,31 @@ impl ILnaddrService for DirectLnaddrService {
 
 fn unix_now() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
+}
+
+/// Verifies that `auth` authorizes management of `managed`, returning the
+/// `UpdatedBy` attribution to record on the resulting address record.
+fn verify_management_auth(
+    managed: &crate::repository::sqlite::ManagedAddress,
+    auth: &ManagementAuth,
+) -> Result<UpdatedBy> {
+    match auth {
+        ManagementAuth::Token(token) => {
+            let parsed_hash = PasswordHash::new(&managed.authentication_token_hash)
+                .map_err(|_| anyhow::anyhow!("Invalid management token"))?;
+            Argon2::default()
+                .verify_password(token.as_bytes(), &parsed_hash)
+                .map_err(|_| anyhow::anyhow!("Invalid management token"))?;
+            Ok(UpdatedBy::Token)
+        }
+        ManagementAuth::Owner(pubkey) => {
+            ensure!(
+                managed.owner_pubkey.as_deref() == Some(pubkey.as_str()),
+                "Not the address owner"
+            );
+            Ok(UpdatedBy::Owner)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -398,10 +418,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_auth_manages_address_and_stranger_cannot() {
+        let (_directory, service) = service(true);
+        let owner = "a".repeat(64);
+        let response = service
+            .register_lnaddr("example.com", "alice", "receiver@example.net", Some(&owner))
+            .await
+            .unwrap();
+        assert!(
+            service
+                .update_lnaddr(
+                    "example.com",
+                    "alice",
+                    "updated@example.net",
+                    &ManagementAuth::Owner("b".repeat(64)),
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .update_lnaddr(
+                    "example.com",
+                    "alice",
+                    "updated@example.net",
+                    &ManagementAuth::Owner(owner.clone()),
+                )
+                .await
+                .is_ok()
+        );
+        // token fallback still works:
+        service
+            .remove_lnaddr(
+                "example.com",
+                "alice",
+                &ManagementAuth::Token(response.authentication_token),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn activates_only_after_publication() {
         let (_directory, service) = service(true);
         let response = service
-            .register_lnaddr("example.com", "alice", "receiver@example.net")
+            .register_lnaddr("example.com", "alice", "receiver@example.net", None)
             .await
             .unwrap();
         assert!(response.active);
@@ -418,7 +479,7 @@ mod tests {
     async fn failed_publication_stays_inactive_and_retryable() {
         let (_directory, service) = service(false);
         let response = service
-            .register_lnaddr("example.com", "alice", "receiver@example.net")
+            .register_lnaddr("example.com", "alice", "receiver@example.net", None)
             .await
             .unwrap();
         assert!(!response.active);
@@ -436,17 +497,25 @@ mod tests {
     async fn deletion_requires_token_and_tombstone_acknowledgement() {
         let (_directory, service) = service(true);
         let response = service
-            .register_lnaddr("example.com", "alice", "receiver@example.net")
+            .register_lnaddr("example.com", "alice", "receiver@example.net", None)
             .await
             .unwrap();
         assert!(
             service
-                .remove_lnaddr("example.com", "alice", "wrong")
+                .remove_lnaddr(
+                    "example.com",
+                    "alice",
+                    &ManagementAuth::Token("wrong".to_owned()),
+                )
                 .await
                 .is_err()
         );
         service
-            .remove_lnaddr("example.com", "alice", &response.authentication_token)
+            .remove_lnaddr(
+                "example.com",
+                "alice",
+                &ManagementAuth::Token(response.authentication_token),
+            )
             .await
             .unwrap();
         assert!(
@@ -462,7 +531,7 @@ mod tests {
     async fn management_token_updates_destination_with_a_backed_revision() {
         let (_directory, service) = service(true);
         let registration = service
-            .register_lnaddr("example.com", "alice", "receiver@example.net")
+            .register_lnaddr("example.com", "alice", "receiver@example.net", None)
             .await
             .unwrap();
         assert!(
@@ -471,7 +540,7 @@ mod tests {
                     "example.com",
                     "alice",
                     "updated@example.net",
-                    &registration.authentication_token,
+                    &ManagementAuth::Token(registration.authentication_token),
                 )
                 .await
                 .unwrap()
@@ -486,7 +555,12 @@ mod tests {
         assert_eq!(managed.revision, 2);
         assert!(
             service
-                .update_lnaddr("example.com", "alice", "other@example.net", "wrong")
+                .update_lnaddr(
+                    "example.com",
+                    "alice",
+                    "other@example.net",
+                    &ManagementAuth::Token("wrong".to_owned()),
+                )
                 .await
                 .is_err()
         );
@@ -496,7 +570,7 @@ mod tests {
     async fn failed_destination_update_keeps_old_destination_resolvable() {
         let (_directory, service) = service(true);
         let registration = service
-            .register_lnaddr("example.com", "alice", "receiver@example.net")
+            .register_lnaddr("example.com", "alice", "receiver@example.net", None)
             .await
             .unwrap();
         let mut failing = DirectLnaddrService::new(
@@ -513,7 +587,7 @@ mod tests {
                     "example.com",
                     "alice",
                     "updated@example.net",
-                    &registration.authentication_token,
+                    &ManagementAuth::Token(registration.authentication_token),
                 )
                 .await
                 .unwrap()

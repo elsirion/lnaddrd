@@ -85,7 +85,7 @@ pub async fn registration_start(
     {
         Ok(Quote::Free) => match state
             .service
-            .register_lnaddr(&form.domain, &form.username, &form.destination)
+            .register_lnaddr(&form.domain, &form.username, &form.destination, None)
             .await
         {
             Ok(response) => Html(
@@ -101,7 +101,7 @@ pub async fn registration_start(
         },
         Ok(Quote::Paid(_)) => match state
             .registration_manager
-            .start(&form.domain, &form.username, &form.destination)
+            .start(&form.domain, &form.username, &form.destination, None)
             .await
         {
             Ok(started) => {
@@ -307,7 +307,7 @@ pub async fn register_form_submit(
     };
     match state
         .service
-        .register_lnaddr(&req.domain, &req.username, &req.lnurl)
+        .register_lnaddr(&req.domain, &req.username, &req.lnurl, None)
         .await
     {
         Ok(resp) => {

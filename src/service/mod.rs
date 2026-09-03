@@ -32,13 +32,14 @@ pub trait ILnaddrService {
         domain: &str,
         username: &str,
         destination: &str,
+        owner_pubkey: Option<&str>,
     ) -> Result<RegisterResponse>;
 
     async fn remove_lnaddr(
         &self,
         domain: &str,
         username: &str,
-        authentication_token: &str,
+        auth: &ManagementAuth,
     ) -> Result<()>;
 
     async fn update_lnaddr(
@@ -46,8 +47,17 @@ pub trait ILnaddrService {
         domain: &str,
         username: &str,
         destination: &str,
-        authentication_token: &str,
+        auth: &ManagementAuth,
     ) -> Result<bool>;
+}
+
+/// How a caller is authorized to manage (update/remove) an existing address.
+#[derive(Debug, Clone)]
+pub enum ManagementAuth {
+    /// The opaque per-address management token issued at registration time.
+    Token(String),
+    /// A verified 64-char hex Nostr pubkey matching the address's owner.
+    Owner(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
