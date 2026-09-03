@@ -215,6 +215,11 @@ pub fn parse_policy(destination: &str, tiers: &str) -> Result<PaymentPolicyRecor
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    ensure!(!tiers.is_empty(), "Add at least one pricing tier");
+    ensure!(
+        tiers.iter().any(|tier| tier.price_msat > 0),
+        "At least one pricing tier must have a positive price"
+    );
     validate_tiers(&tiers)?;
     Ok(PaymentPolicyRecord {
         destination: (&destination).into(),
@@ -271,6 +276,13 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn policy_requires_a_real_payment_tier() {
+        assert!(parse_policy("receiver@example.com", "").is_err());
+        assert!(parse_policy("receiver@example.com", "64=0").is_err());
+        assert!(parse_policy("receiver@example.com", "5=1000\n64=0").is_ok());
     }
 
     #[test]

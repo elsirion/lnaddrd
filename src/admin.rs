@@ -35,6 +35,108 @@ use crate::{AppState, crypto::RootSecret, repository::sqlite::SqlitePaymentAddre
 pub(crate) const SESSION_COOKIE: &str = "lnaddrd_admin";
 const SESSION_DURATION: Duration = Duration::from_secs(12 * 60 * 60);
 
+const ADMIN_POLICY_JS: &str = r#"
+(function () {
+  function pending(form, message) {
+    var status = form.querySelector('[data-recipient-validation]');
+    status.innerHTML = '<span class="inline-flex items-center gap-2 text-sm text-gray-500"><svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>' + message + '</span>';
+    status.dataset.valid = 'false';
+    form.querySelector('[data-save-pricing]').disabled = true;
+  }
+
+  function syncTiers(form, requestCheck) {
+    var rows = Array.from(form.querySelectorAll('[data-tier-row]'));
+    var error = form.querySelector('[data-tier-error]');
+    var values = [];
+    var previousLength = 0;
+    var previousPrice = Number.MAX_SAFE_INTEGER;
+    var message = '';
+    rows.forEach(function (row) {
+      var lengthValue = row.querySelector('[data-tier-length]').value;
+      var priceValue = row.querySelector('[data-tier-price]').value;
+      var length = Number(lengthValue);
+      var price = Number(priceValue);
+      if (lengthValue === '' || priceValue === '') message ||= 'Complete both fields for every tier.';
+      if (!Number.isInteger(length) || length < 1 || length > 64) message ||= 'Maximum length must be a whole number from 1 to 64.';
+      if (!Number.isSafeInteger(price) || price < 0) message ||= 'Price must be a non-negative whole number of millisatoshis.';
+      if (length <= previousLength) message ||= 'Tier lengths must be strictly increasing.';
+      if (price > previousPrice) message ||= 'Prices must stay the same or decrease for longer names.';
+      previousLength = length;
+      previousPrice = price;
+      values.push(length + '=' + price);
+    });
+    if (!rows.length) message = 'Add at least one pricing tier.';
+    form.querySelector('[data-tiers-value]').value = values.join('\n');
+    error.textContent = message;
+    error.classList.toggle('hidden', !message);
+    if (form.querySelector('[data-payment-enabled]').checked) {
+      form.querySelector('[data-save-pricing]').disabled = true;
+      if (!message && requestCheck && form.querySelector('[data-payment-destination]').value.trim()) {
+        pending(form, 'Checking recipient and LUD-21 support…');
+        htmx.trigger(form.querySelector('[data-payment-destination]'), 'pricing-tiers-changed');
+      }
+    }
+    return !message;
+  }
+
+  function addTier(form) {
+    var row = document.createElement('div');
+    row.dataset.tierRow = '';
+    row.className = 'grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end';
+    row.innerHTML = '<div><label class="mb-2 block text-xs font-medium text-gray-700">Maximum username length</label><input data-tier-length type="number" min="1" max="64" step="1" required class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><div><label class="mb-2 block text-xs font-medium text-gray-700">Price (msat)</label><input data-tier-price type="number" min="0" step="1" required class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50">Remove</button>';
+    form.querySelector('[data-tier-list]').appendChild(row);
+    row.querySelector('[data-tier-length]').focus();
+    syncTiers(form, false);
+  }
+
+  function init(root) {
+    root.querySelectorAll('[data-payment-policy]:not([data-policy-ready])').forEach(function (form) {
+      form.dataset.policyReady = '';
+      var enabled = form.querySelector('[data-payment-enabled]');
+      var fields = form.querySelector('[data-payment-fields]');
+      var destination = form.querySelector('[data-payment-destination]');
+      function toggle() {
+        fields.classList.toggle('hidden', !enabled.checked);
+        if (!enabled.checked) form.querySelector('[data-save-pricing]').disabled = false;
+        else if (syncTiers(form, false) && destination.value.trim()) {
+          pending(form, 'Checking recipient and LUD-21 support…');
+          htmx.trigger(destination, 'pricing-tiers-changed');
+        }
+      }
+      enabled.addEventListener('change', toggle);
+      destination.addEventListener('input', function () {
+        if (enabled.checked) pending(form, destination.value.trim() ? 'Checking recipient and LUD-21 support…' : 'Enter a recipient to check LUD-21 support.');
+      });
+      form.querySelector('[data-add-tier]').addEventListener('click', function () { addTier(form); });
+      form.querySelector('[data-tier-list]').addEventListener('click', function (event) {
+        var button = event.target.closest('[data-remove-tier]');
+        if (button) { button.closest('[data-tier-row]').remove(); syncTiers(form, true); }
+      });
+      form.querySelector('[data-tier-list]').addEventListener('input', function () { syncTiers(form, true); });
+      form.addEventListener('submit', function (event) {
+        if (enabled.checked && (!syncTiers(form, false) || form.querySelector('[data-recipient-validation] [data-valid="true"]') === null)) {
+          event.preventDefault();
+          pending(form, 'Complete a successful recipient check before saving.');
+        }
+      });
+      syncTiers(form, false);
+      toggle();
+    });
+  }
+  document.addEventListener('DOMContentLoaded', function () { init(document); });
+  document.addEventListener('htmx:afterSwap', function (event) {
+    init(event.detail.target);
+    var status = event.detail.target.closest && event.detail.target.closest('[data-recipient-validation]');
+    if (status) {
+      var form = status.closest('[data-payment-policy]');
+      var valid = status.querySelector('[data-valid="true"]') !== null;
+      status.dataset.valid = valid ? 'true' : 'false';
+      form.querySelector('[data-save-pricing]').disabled = form.querySelector('[data-payment-enabled]').checked && !valid;
+    }
+  });
+})();
+"#;
+
 pub struct AdminAuth {
     password_hash: String,
     password_fingerprint: String,
@@ -172,6 +274,13 @@ pub struct PaymentPolicyForm {
     tiers: String,
     #[serde(default)]
     enabled: bool,
+}
+
+#[derive(Deserialize)]
+pub struct PaymentPolicyValidationForm {
+    csrf_token: String,
+    destination: String,
+    tiers: String,
 }
 
 #[derive(Deserialize)]
@@ -715,6 +824,33 @@ pub async fn payment_policy_submit(
     .into_response()
 }
 
+pub async fn payment_policy_validate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<PaymentPolicyValidationForm>,
+) -> Response {
+    let session = match state.admin_auth.authenticate(&headers).await {
+        Ok(Some(session)) => session,
+        _ => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+    if !csrf_matches(&session, &form.csrf_token) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let result = match parse_policy(&form.destination, &form.tiers) {
+        Ok(policy) => PaymentClient::default().validate_policy(&policy).await,
+        Err(error) => Err(error),
+    };
+    let markup = match result {
+        Ok(()) => {
+            html! { span data-valid="true" class="inline-flex items-center gap-1.5 text-sm text-green-700" { "✓ LUD-21 verification supported" } }
+        }
+        Err(error) => {
+            html! { span data-valid="false" class="text-sm text-red-700" { "✕ " (error) } }
+        }
+    };
+    Html(markup.into_string()).into_response()
+}
+
 pub async fn logout_submit(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -756,25 +892,34 @@ fn configuration_markup(
                 @let destination = domain_configuration.payment_policy.as_ref()
                     .and_then(|policy| Destination::try_from(policy.destination.clone()).ok())
                     .map(|value| value.to_string()).unwrap_or_default();
-                @let tiers = domain_configuration.payment_policy.as_ref().map(|policy| {
-                    policy.tiers.iter().map(|tier| format!("{}={}", tier.max_length, tier.price_msat))
-                        .collect::<Vec<_>>().join("\n")
-                }).unwrap_or_default();
+                @let payment_fields_class = if domain_configuration.payment_policy.is_some() { "space-y-5" } else { "hidden space-y-5" };
                 form method="post" action="/admin/payment-policy"
-                    class="mt-5 space-y-4" hx-post="/admin/payment-policy" hx-target="#configuration" hx-swap="innerHTML" {
+                    class="mt-5 space-y-4" data-payment-policy hx-post="/admin/payment-policy" hx-target="#configuration" hx-swap="innerHTML" {
                     input type="hidden" name="csrf_token" value=(csrf_token);
                     input type="hidden" name="domain" value=(domain);
                     label class="inline-flex cursor-pointer items-center gap-3" {
-                        input type="checkbox" name="enabled" value="true" class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        input type="checkbox" name="enabled" value="true" data-payment-enabled class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                             checked[domain_configuration.payment_policy.is_some()];
                         span class="text-sm font-medium text-gray-900" { "Require payment" }
                     }
-                    div { label for="pricing-destination" class=(label_class()) { "Recipient LNURL or Lightning Address" } input id="pricing-destination" name="destination" value=(destination) class=(input_class()); }
-                    div { label for="pricing-tiers" class=(label_class()) { "Tiers" } p class="mb-2 text-xs text-gray-500" { "One max_length=price_msat pair per line" }
-                        textarea id="pricing-tiers" name="tiers" rows="5" class=(input_class()) { (tiers) }
+                    div data-payment-fields class=(payment_fields_class) {
+                    div { label for="pricing-destination" class=(label_class()) { "Recipient LNURL or Lightning Address" }
+                        input id="pricing-destination" name="destination" value=(destination) class=(input_class()) data-payment-destination
+                            hx-post="/admin/payment-policy/validate" hx-trigger="input changed delay:600ms, pricing-tiers-changed delay:300ms" hx-include="closest form" hx-target="#recipient-validation" hx-swap="innerHTML" hx-sync="this:replace";
+                        div id="recipient-validation" class="mt-2 min-h-5 text-sm text-gray-500" data-recipient-validation { "Enter a recipient to check LUD-21 support." }
                     }
-                    p class="text-sm text-gray-500" { "Saving probes the recipient with an unpaid invoice and requires LUD-21 verification." }
-                    button type="submit" class=(primary_button()) { "Save pricing" }
+                    div { div class="flex items-center justify-between gap-4" { div { label class=(label_class()) { "Pricing tiers" } p class="text-xs text-gray-500" { "Shorter names must not cost less than longer names." } } button type="button" data-add-tier class=(secondary_button()) { "+ Add tier" } }
+                        div data-tier-list class="mt-3 space-y-3" {
+                            @if let Some(policy) = &domain_configuration.payment_policy {
+                                @for tier in &policy.tiers { (tier_row(Some(tier.max_length), Some(tier.price_msat))) }
+                            } @else { (tier_row(Some(5), None)) }
+                        }
+                        input type="hidden" name="tiers" data-tiers-value;
+                        p data-tier-error class="mt-2 hidden text-sm text-red-700" {}
+                    }
+                    p class="text-sm text-gray-500" { "The check requests an unpaid invoice in the lowest configured amount and verifies its LUD-21 endpoint." }
+                    }
+                    button type="submit" data-save-pricing class=(primary_button()) disabled[domain_configuration.payment_policy.is_some()] { "Save pricing" }
                 }
                 }
                 section class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm" {
@@ -841,7 +986,18 @@ pub(crate) fn admin_head(title: &str) -> maud::Markup {
         title { (title) " · lnaddrd admin" }
         link rel="stylesheet" href="/assets/flowbite-1.7.0.min.css";
         script src="/assets/tailwindcss-3.4.17.js" {} script src="/assets/flowbite-1.7.0.min.js" {} script src="/assets/htmx-4.0.0.min.js" {}
+        script { (maud::PreEscaped(ADMIN_POLICY_JS)) }
     } }
+}
+
+fn tier_row(max_length: Option<u16>, price_msat: Option<u64>) -> maud::Markup {
+    html! {
+        div data-tier-row class="grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end" {
+            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Maximum username length" } input data-tier-length type="number" min="1" max="64" step="1" required value=[max_length.map(|value| value.to_string())] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
+            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Price (msat)" } input data-tier-price type="number" min="0" step="1" required value=[price_msat.map(|value| value.to_string())] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
+            button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50" { "Remove" }
+        }
+    }
 }
 
 fn admin_nav(csrf_token: &str) -> maud::Markup {
@@ -1043,6 +1199,43 @@ fn ensure_private_permissions(metadata: &fs::Metadata, path: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pricing_editor_is_structured_and_validation_gated() {
+        use crate::nostr::codec::{
+            DomainConfigurationRecord, PaymentPolicyRecord, PaymentTierRecord,
+        };
+        use std::collections::BTreeMap;
+
+        let domain: Domain = "example.com".parse().unwrap();
+        let destination: Destination = "receiver@example.net".parse().unwrap();
+        let configuration = ServiceConfigurationRecord {
+            schema: 1,
+            revision: 1,
+            instance_id: "test".to_owned(),
+            domains: BTreeMap::from([(
+                domain,
+                DomainConfigurationRecord {
+                    payment_policy: Some(PaymentPolicyRecord {
+                        destination: (&destination).into(),
+                        tiers: vec![PaymentTierRecord {
+                            max_length: 5,
+                            price_msat: 10_000,
+                        }],
+                    }),
+                    reserved_names: vec![],
+                },
+            )]),
+            updated_at: 1,
+        };
+        let markup =
+            configuration_markup(&configuration, "csrf", Some("example.com"), None).into_string();
+        assert!(markup.contains("data-tier-row"));
+        assert!(markup.contains("data-add-tier"));
+        assert!(markup.contains("/admin/payment-policy/validate"));
+        assert!(markup.contains("data-save-pricing"));
+        assert!(!markup.contains("textarea"));
+    }
 
     fn auth() -> (tempfile::TempDir, AdminAuth) {
         let directory = tempfile::tempdir().unwrap();
