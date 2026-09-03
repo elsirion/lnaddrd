@@ -10,7 +10,9 @@ use crate::{
     crypto::ServiceKeys,
     domain::{Domain, Username},
     nostr::{
-        codec::{BackupCodec, PaymentPolicyRecord, ServiceConfigurationRecord},
+        codec::{
+            BackupCodec, PaymentPolicyRecord, ServiceConfigurationRecord, ServiceProfileRecord,
+        },
         publisher::Publisher,
     },
     repository::sqlite::SqlitePaymentAddressRepository,
@@ -107,6 +109,20 @@ impl ConfigurationManager {
             .get_mut(&domain)
             .expect("configured domain is present")
             .payment_policy = policy;
+        self.publish(configuration).await
+    }
+
+    pub async fn set_profile(
+        &self,
+        profile: Option<ServiceProfileRecord>,
+    ) -> Result<ConfigurationUpdate> {
+        let profile = profile.filter(|profile| !profile.is_empty());
+        if let Some(profile) = &profile {
+            profile.validate()?;
+        }
+        let _guard = self.mutation_lock.lock().await;
+        let mut configuration = self.current().await?;
+        configuration.profile = profile;
         self.publish(configuration).await
     }
 
@@ -211,5 +227,41 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(manager.current().await.unwrap().revision, 2);
+    }
+
+    #[tokio::test]
+    async fn profile_round_trips_through_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = SqlitePaymentAddressRepository::new(
+            directory.path().join("db.sqlite3").to_str().unwrap(),
+        )
+        .unwrap();
+        repository
+            .set_metadata("instance_id", &"01".repeat(32))
+            .await
+            .unwrap();
+        repository
+            .set_metadata("configuration_revision", "1")
+            .await
+            .unwrap();
+        let keys = Arc::new(RootSecret::from_bytes([0x42; 32]).derive().unwrap());
+        let manager = ConfigurationManager::new(
+            repository.clone(),
+            keys,
+            Arc::new(FixturePublisher),
+            &["example.com".to_owned()],
+        )
+        .unwrap();
+
+        let profile = ServiceProfileRecord {
+            about: Some("Test operator".to_owned()),
+            contact: None,
+            terms_url: Some("https://example.com/terms".to_owned()),
+        };
+        let update = manager.set_profile(Some(profile.clone())).await.unwrap();
+        assert!(update.active);
+        assert_eq!(manager.current().await.unwrap().profile, Some(profile));
+        manager.set_profile(None).await.unwrap();
+        assert_eq!(manager.current().await.unwrap().profile, None);
     }
 }
