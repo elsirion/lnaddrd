@@ -27,7 +27,9 @@ use tracing::info;
 
 use crate::domain::{Destination, Domain, Username};
 use crate::nostr::announcement::build_event;
-use crate::nostr::codec::{AddressRecord, BackupCodec, ServiceConfigurationRecord, UpdatedBy};
+use crate::nostr::codec::{
+    AddressRecord, BackupCodec, ServiceConfigurationRecord, ServiceProfileRecord, UpdatedBy,
+};
 use crate::nostr::restore;
 use crate::payment::{PaymentClient, parse_policy};
 use crate::{AppState, crypto::RootSecret, repository::sqlite::SqlitePaymentAddressRepository};
@@ -301,6 +303,17 @@ pub struct SeedExportForm {
     password: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ProfileForm {
+    pub csrf_token: String,
+    #[serde(default)]
+    pub about: String,
+    #[serde(default)]
+    pub contact: String,
+    #[serde(default)]
+    pub terms_url: String,
+}
+
 pub async fn login_page() -> Html<String> {
     Html(login_markup(None))
 }
@@ -368,6 +381,22 @@ pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Res
                     div class="rounded-lg border border-gray-200 bg-white px-5 py-4 text-sm shadow-sm" {
                         span class="font-medium text-gray-700" { "Service public key" }
                         code class="mt-1 block break-all text-xs text-gray-500" { (state.keys.service_public_key()) }
+                    }
+                    @let profile = configuration.profile.clone().unwrap_or(ServiceProfileRecord { about: None, contact: None, terms_url: None });
+                    section class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm" {
+                        h2 class="text-xl font-semibold" { "Public profile" }
+                        p class="mt-1 text-sm text-gray-500" { "Published in the Nostr service announcement so marketplaces can present this operator." }
+                        form method="post" action="/admin/profile" hx-post="/admin/profile" hx-target="#profile-result" class="mt-4 space-y-4 max-w-2xl" {
+                            input type="hidden" name="csrf_token" value=(session.csrf_token);
+                            div { label for="profile-about" class=(label_class()) { "About (max 500 characters)" }
+                                textarea id="profile-about" name="about" rows="3" class=(input_class()) { (profile.about.clone().unwrap_or_default()) } }
+                            div { label for="profile-contact" class=(label_class()) { "Contact (npub)" }
+                                input id="profile-contact" name="contact" value=(profile.contact.clone().unwrap_or_default()) class=(input_class()); }
+                            div { label for="profile-terms" class=(label_class()) { "Terms URL (HTTPS)" }
+                                input id="profile-terms" name="terms_url" value=(profile.terms_url.clone().unwrap_or_default()) class=(input_class()); }
+                            button type="submit" class=(primary_button()) { "Save profile" }
+                        }
+                        div id="profile-result" class="mt-3" {}
                     }
                     section class="rounded-lg border border-gray-200 bg-white shadow-sm" {
                         div class="border-b border-gray-200 p-5" { h2 class="text-xl font-semibold" { "Domains" } }
@@ -792,6 +821,60 @@ pub async fn reserved_name_submit(
         .into_string(),
     )
     .into_response()
+}
+
+pub async fn profile_submit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<ProfileForm>,
+) -> Response {
+    let session = match state.admin_auth.authenticate(&headers).await {
+        Ok(Some(session)) => session,
+        _ => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+    if !csrf_matches(&session, &form.csrf_token) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let field = |value: String| Some(value.trim().to_owned()).filter(|value| !value.is_empty());
+    let profile = ServiceProfileRecord {
+        about: field(form.about),
+        contact: field(form.contact),
+        terms_url: field(form.terms_url),
+    };
+    let update = match state.configuration_manager.set_profile(Some(profile)).await {
+        Ok(update) => update,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(
+                    html! { p role="alert" class="text-sm text-red-600" { (error) } }.into_string(),
+                ),
+            )
+                .into_response();
+        }
+    };
+    let configuration = match state.configuration_manager.current().await {
+        Ok(configuration) => configuration,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if update.active {
+        if let Err(error) = publish_announcement(&state, &configuration).await {
+            return configuration_error(error);
+        }
+    }
+    let message = if update.active {
+        format!(
+            "Profile saved; configuration revision {} is active and the announcement was republished.",
+            update.revision
+        )
+    } else {
+        format!(
+            "Profile saved; revision {} is waiting for relay acknowledgement.",
+            update.revision
+        )
+    };
+    Html(html! { p role="status" class="text-sm text-green-700" { (message) } }.into_string())
+        .into_response()
 }
 
 pub async fn payment_policy_submit(

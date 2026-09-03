@@ -1,7 +1,8 @@
 use admin::{
     AdminAuth, address_delete_submit, address_retry_submit, dashboard, domain_addresses,
     domain_settings, login_page, login_submit, logout_submit, payment_policy_submit,
-    payment_policy_validate, reserved_name_submit, restore_dry_run_submit, seed_export_submit,
+    payment_policy_validate, profile_submit, reserved_name_submit, restore_dry_run_submit,
+    seed_export_submit,
 };
 use anyhow::Result;
 use api::{
@@ -180,6 +181,7 @@ async fn normal_router(
         .route("/admin/logout", post(logout_submit))
         .route("/admin/reserved", post(reserved_name_submit))
         .route("/admin/payment-policy", post(payment_policy_submit))
+        .route("/admin/profile", post(profile_submit))
         .route(
             "/admin/payment-policy/validate",
             post(payment_policy_validate),
