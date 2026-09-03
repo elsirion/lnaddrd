@@ -1,6 +1,9 @@
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{
+        ConnectInfo, Path, Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -34,8 +37,12 @@ pub struct QuoteQuery {
 pub async fn quote_v1(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Query(query): Query<QuoteQuery>,
+    query: Result<Query<QuoteQuery>, QueryRejection>,
 ) -> Response {
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(_) => return api_error(StatusCode::BAD_REQUEST, "invalid_input"),
+    };
     if !state
         .registration_manager
         .allow_request(peer.ip(), "quote", 30)
@@ -79,8 +86,12 @@ fn validate_owner_pubkey(value: &Option<String>) -> Result<(), Response> {
 pub async fn register_v1(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Json(body): Json<RegisterBody>,
+    body: Result<Json<RegisterBody>, JsonRejection>,
 ) -> Response {
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(_) => return api_error(StatusCode::BAD_REQUEST, "invalid_input"),
+    };
     if !state
         .registration_manager
         .allow_request(peer.ip(), "start", 10)
@@ -119,8 +130,12 @@ pub async fn register_v1(
 pub async fn register_start_v1(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Json(body): Json<RegisterBody>,
+    body: Result<Json<RegisterBody>, JsonRejection>,
 ) -> Response {
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(_) => return api_error(StatusCode::BAD_REQUEST, "invalid_input"),
+    };
     if !state
         .registration_manager
         .allow_request(peer.ip(), "start", 10)
@@ -158,6 +173,16 @@ pub async fn register_start_v1(
 }
 
 pub async fn register_status_v1(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    // `RegistrationManager::status()` returns `Err` both when the attempt is
+    // missing *and* for transient failures (e.g. payment-verification outages)
+    // on attempts that do exist. Distinguish those cases up front by checking
+    // existence directly, so a temporary hiccup on a real attempt is reported
+    // as a server error rather than incorrectly as "not_found".
+    match state.repository.registration_attempt(&id).await {
+        Ok(None) => return api_error(StatusCode::NOT_FOUND, "not_found"),
+        Err(_) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+        Ok(Some(_)) => {}
+    }
     match state.registration_manager.status(&id).await {
         Ok(RegistrationStatus::Pending) => {
             Json(json!({ "state": "pending_payment" })).into_response()
@@ -175,7 +200,7 @@ pub async fn register_status_v1(State(state): State<AppState>, Path(id): Path<St
             "management_token": management_token,
         }))
         .into_response(),
-        Err(_) => api_error(StatusCode::NOT_FOUND, "not_found"),
+        Err(_) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
     }
 }
 
@@ -328,6 +353,64 @@ mod tests {
         let body: serde_json::Value = read_json(response).await;
         assert_eq!(body["address"], "alice@example.com");
         assert!(body["management_token"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn malformed_json_body_is_reported_as_invalid_input() {
+        let app = test_router().await;
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from("not json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["error"], "invalid_input");
+    }
+
+    #[tokio::test]
+    async fn missing_query_param_is_reported_as_invalid_input() {
+        let app = test_router().await;
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/register/quote?domain=example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["error"], "invalid_input");
+    }
+
+    #[tokio::test]
+    async fn invalid_owner_pubkey_is_rejected() {
+        let app = test_router().await;
+        let response = app
+            .oneshot(
+                Request::post("/api/v1/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "domain": "example.com",
+                            "username": "alice",
+                            "destination": "receiver@example.net",
+                            "owner_pubkey": "XYZ",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["error"], "invalid_input");
     }
 
     #[tokio::test]
