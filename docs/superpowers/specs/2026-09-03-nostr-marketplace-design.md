@@ -73,10 +73,9 @@ Gaps this design closes:
 - `announcement::build_event` fills `about`, `contact`, and `terms_url` from
   the profile. The announcement protocol already defines these fields; no
   protocol change.
-- Re-announcement on change: `ConfigurationManager` signals a
-  `tokio::sync::Notify` that `AnnouncementWorker` selects on alongside its
-  weekly tick. This also fixes the existing gap where pricing edits are not
-  announced until the next tick.
+- Re-announcement on change: the profile submit handler calls the existing
+  `admin::publish_announcement` helper, the same pattern already used by the
+  reserved-name and payment-policy handlers.
 
 ## Workstream B — registration JSON API v1 + CORS
 
