@@ -11,6 +11,7 @@ use api::{
     liveness_handler, readiness_handler, register_lnaddr_handler, remove_lnaddr_handler,
     tailwind_asset_handler, update_lnaddr_handler, well_known_announcement_handler,
 };
+use api_v1::{quote_v1, register_start_v1, register_status_v1, register_v1};
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -36,6 +37,7 @@ use ui::{
 
 pub mod admin;
 pub mod api;
+pub mod api_v1;
 pub mod bootstrap;
 pub mod config;
 pub mod configuration;
@@ -199,6 +201,10 @@ async fn normal_router(
             get(get_lnaddr_manifest_handler),
         )
         .route("/lnurl/:username", get(generate_lnurl_handler))
+        .route("/api/v1/register/quote", get(quote_v1))
+        .route("/api/v1/register", post(register_v1))
+        .route("/api/v1/register/start", post(register_start_v1))
+        .route("/api/v1/register/:id", get(register_status_v1))
         .route("/", get(register_form))
         .route("/ui/register", post(register_form_submit))
         .route("/register/quote", post(registration_quote))
@@ -212,6 +218,71 @@ async fn normal_router(
             axum::http::StatusCode::NOT_FOUND
         });
     Ok(app)
+}
+
+/// Test-only `AppState` builder for handler-level tests (see `src/api_v1.rs`). The
+/// caller supplies the repository, domains, publisher and service so it can inject
+/// fixtures (e.g. a no-op `DestinationValidator`); everything else that a real
+/// `AppState` needs but that unit tests never exercise (admin auth, Nostr relay
+/// client, CLI `Config`) is stubbed out here.
+#[cfg(test)]
+pub async fn test_app_state(
+    repository: SqlitePaymentAddressRepository,
+    domains: &[String],
+    publisher: Publisher,
+    service: LnaddrService,
+) -> Result<AppState> {
+    let keys = Arc::new(RootSecret::from_bytes([0x42; 32]).derive()?);
+    let configuration_manager = Arc::new(ConfigurationManager::new(
+        repository.clone(),
+        keys.clone(),
+        publisher.clone(),
+        domains,
+    )?);
+    let registration_manager = Arc::new(RegistrationManager::new(
+        repository.clone(),
+        domains,
+        keys.clone(),
+        publisher.clone(),
+    )?);
+    let scratch = tempfile::tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(scratch.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    let admin_auth = Arc::new(AdminAuth::load_or_create(
+        &scratch.path().join("password"),
+        repository.clone(),
+    )?);
+    // The admin password file only needs to exist while `load_or_create` reads it;
+    // leak the directory so later test assertions never race its cleanup.
+    std::mem::forget(scratch);
+    let config = Arc::new(Config {
+        operation: None,
+        domains: domains.to_vec(),
+        bind: "127.0.0.1:0".parse()?,
+        database_path: String::new(),
+        root_secret_file: std::path::PathBuf::new(),
+        admin_password_file: std::path::PathBuf::new(),
+        nostr_relays: Vec::new(),
+        public_base_url: None,
+        service_name: "test".to_owned(),
+        warning: None,
+    });
+    let nostr = Arc::new(NostrPublisher::offline());
+
+    Ok(AppState {
+        service,
+        config,
+        keys,
+        repository,
+        admin_auth,
+        configuration_manager,
+        registration_manager,
+        publisher,
+        nostr,
+    })
 }
 
 pub async fn initialize_empty(config: &Config) -> Result<()> {

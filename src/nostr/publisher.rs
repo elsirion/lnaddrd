@@ -43,6 +43,15 @@ impl NostrPublisher {
         Ok(Self { client })
     }
 
+    /// Test-only constructor that skips relay configuration and connection, for
+    /// building an `AppState` in unit tests that never exercise Nostr fetch/restore.
+    #[cfg(test)]
+    pub(crate) fn offline() -> Self {
+        Self {
+            client: Client::default(),
+        }
+    }
+
     pub async fn fetch(&self, filter: Filter, timeout: Duration) -> Result<Events> {
         self.client
             .fetch_events(filter, timeout)

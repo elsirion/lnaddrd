@@ -58,6 +58,13 @@ impl DirectLnaddrService {
     pub fn into_dyn(self) -> LnaddrService {
         Arc::new(self)
     }
+
+    /// Test-only hook for injecting a no-op destination validator, avoiding real
+    /// network I/O from `PaymentClient::validate` in unit tests.
+    #[cfg(test)]
+    pub(crate) fn set_destination_validator(&mut self, validator: Arc<dyn DestinationValidator>) {
+        self.destination_validator = validator;
+    }
 }
 
 #[async_trait]
