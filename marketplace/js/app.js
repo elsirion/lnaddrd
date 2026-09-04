@@ -2,6 +2,7 @@ import { ANNOUNCEMENT_KIND, ANNOUNCEMENT_TAG } from "./config.js";
 import { validateAnnouncement, upsertByCoordinate } from "./announcement.js";
 import { currentRelays, renderRelayEditor } from "./relays.js";
 import { operatorCard, applyBadgeState } from "./render.js";
+import { openRegisterModal } from "./modal.js";
 
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -42,22 +43,16 @@ let pool = null;
 let activeRelays = [];
 let activeSubscriptions = [];
 let renderTimer = null;
+// Set by Task 17 once a Nostr signing extension is connected; passed through
+// to the registration modal as the claimed owner_pubkey.
+let connectedPubkey = null;
 
 const handlers = {
   getDomainStatus(pubkey, domain) {
     return domainStatus.get(`${pubkey}:${domain}`) ?? "checking";
   },
-  // Stub for Task 16, which will replace this with the real registration
-  // modal. Shows an inline note in the card instead of an alert().
   onRegister(entry, domain) {
-    const pubkey = entry.event.pubkey;
-    const note = document.getElementById(`register-note-${pubkey}-${domain}`);
-    if (note) {
-      note.textContent = "Registration UI coming in the next step.";
-      note.classList.remove("hidden");
-    }
-    const button = document.getElementById(`register-${pubkey}-${domain}`);
-    if (button) button.disabled = true;
+    openRegisterModal({ origin: entry.validated.origin, domain, ownerPubkey: connectedPubkey });
   },
 };
 
