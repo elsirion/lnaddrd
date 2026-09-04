@@ -1,30 +1,18 @@
 import { priceSummary } from "./announcement.js";
 
-const BADGE_BASE = "text-xs font-medium px-2.5 py-0.5 rounded";
-const BADGE_VARIANTS = {
-  verified: { classes: "bg-green-100 text-green-800", text: "verified" },
-  mismatch: { classes: "bg-red-100 text-red-800", text: "mismatch" },
-  checking: { classes: "bg-blue-100 text-blue-800", text: "…" },
-  unreachable: { classes: "bg-gray-100 text-gray-600", text: "?" },
-};
+const VERIFIED_BADGE_CLASS = "text-xs font-medium px-2.5 py-0.5 rounded bg-green-100 text-green-800";
 
 /**
- * Mutates an existing badge element in place to reflect the given state.
- * Shared by badge() (initial creation) and app.js's in-place badge updates.
+ * Returns a <span> badge marking a domain as having passed its well-known
+ * check. A card only ever lists verified domains (see app.js's visibility
+ * logic in visibility.js), so there is no "mismatch"/"unreachable"/
+ * "checking" variant to render here — those states just keep a domain out
+ * of the card entirely instead of showing a different badge.
  */
-export function applyBadgeState(el, state) {
-  const variant = BADGE_VARIANTS[state] ?? BADGE_VARIANTS.unreachable;
-  el.className = `${BADGE_BASE} ${variant.classes}`;
-  el.textContent = variant.text;
-}
-
-/**
- * Returns a <span> badge element for one of "verified" | "mismatch" |
- * "unreachable" | "checking".
- */
-export function badge(state) {
+function verifiedBadge() {
   const el = document.createElement("span");
-  applyBadgeState(el, state);
+  el.className = VERIFIED_BADGE_CLASS;
+  el.textContent = "✓ verified";
   return el;
 }
 
@@ -75,9 +63,12 @@ function httpsLink(url, text, className) {
 /**
  * Builds a card element for one discovered operator.
  * entry: { validated: {origin, dtag, announcement}, event }
- * handlers: { onRegister(entry, domain), getDomainStatus(pubkey, domain) }
+ * verifiedDomains: the subset of announcement.domains that passed their
+ *   well-known check (from visibility.js's classifyOperator) — the only
+ *   domains this card, or the registration modal it opens, ever shows.
+ * handlers: { onRegister(entry, domain) }
  */
-export function operatorCard(entry, handlers) {
+export function operatorCard(entry, verifiedDomains, handlers) {
   const { validated, event } = entry;
   const { announcement, origin } = validated;
   const pubkey = event.pubkey;
@@ -100,7 +91,7 @@ export function operatorCard(entry, handlers) {
   const domainList = document.createElement("div");
   domainList.className = "flex flex-col gap-2";
 
-  for (const domain of announcement.domains) {
+  for (const domain of verifiedDomains) {
     const row = document.createElement("div");
     row.className = "flex flex-wrap items-center justify-between gap-2 text-sm";
 
@@ -112,9 +103,7 @@ export function operatorCard(entry, handlers) {
     domainText.textContent = domain;
     left.append(domainText);
 
-    const domainBadge = badge(handlers.getDomainStatus ? handlers.getDomainStatus(pubkey, domain) : "checking");
-    domainBadge.id = `badge-${pubkey}-${domain}`;
-    left.append(domainBadge);
+    left.append(verifiedBadge());
 
     const price = priceSummary(announcement, domain);
     if (price) {

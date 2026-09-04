@@ -28,7 +28,11 @@
       <button data-tab="browse" class="tab-btn border-b-2 border-blue-700 px-1 pb-2 text-blue-700">Browse</button>
       <button data-tab="manage" class="tab-btn border-b-2 border-transparent px-1 pb-2 text-gray-500 hover:text-gray-700">Manage</button>
     </nav>
-    <section id="operators" class="grid gap-4 sm:grid-cols-2"></section>
+    <div id="browse-panel" class="space-y-2">
+      <section id="operators" class="grid gap-4 sm:grid-cols-2"></section>
+      <p id="operators-placeholder" class="text-sm text-gray-500"></p>
+      <p id="operators-hidden-count" class="hidden text-xs text-gray-400"></p>
+    </div>
     <section id="manage" class="hidden space-y-4"></section>
   </main>
   <div id="modal-root"></div>

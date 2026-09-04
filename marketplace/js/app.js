@@ -1,7 +1,8 @@
 import { ANNOUNCEMENT_KIND, ANNOUNCEMENT_TAG } from "./config.js";
 import { validateAnnouncement, upsertByCoordinate } from "./announcement.js";
 import { currentRelays, renderRelayEditor } from "./relays.js";
-import { operatorCard, applyBadgeState } from "./render.js";
+import { operatorCard } from "./render.js";
+import { classifyOperator } from "./visibility.js";
 import { openRegisterModal } from "./modal.js";
 import { connect } from "./nostr-auth.js";
 import { renderManage } from "./manage.js";
@@ -12,12 +13,12 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     const tab = btn.dataset.tab;
 
     // Hide all sections
-    document.getElementById('operators').classList.add('hidden');
+    document.getElementById('browse-panel').classList.add('hidden');
     document.getElementById('manage').classList.add('hidden');
 
     // Show the selected section
     if (tab === 'browse') {
-      document.getElementById('operators').classList.remove('hidden');
+      document.getElementById('browse-panel').classList.remove('hidden');
     } else if (tab === 'manage') {
       document.getElementById('manage').classList.remove('hidden');
       renderManage(document.getElementById('manage'), { operators, connectedPubkey });
@@ -40,8 +41,14 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 const operators = new Map();
 // Per-domain verification state, keyed `${pubkey}:${domain}`, so it survives
-// incidental re-renders triggered by unrelated events.
+// incidental re-renders triggered by unrelated events. Values are
+// "checking" | "verified" | "mismatch" | "unreachable"; classifyOperator()
+// in visibility.js reads this indirectly via getDomainStatus below.
 const domainStatus = new Map();
+// Relays that have reached eose or closed for the current discovery run —
+// used only to decide when the "Discovering operators…" placeholder should
+// give way to "No operators found" (see renderDiscoveryStatus).
+const settledRelays = new Set();
 let pool = null;
 let activeRelays = [];
 let activeSubscriptions = [];
@@ -79,10 +86,11 @@ connectBtn.addEventListener("click", async () => {
   }
 });
 
+function getDomainStatus(pubkey, domain) {
+  return domainStatus.get(`${pubkey}:${domain}`) ?? "checking";
+}
+
 const handlers = {
-  getDomainStatus(pubkey, domain) {
-    return domainStatus.get(`${pubkey}:${domain}`) ?? "checking";
-  },
   onRegister(entry, domain) {
     openRegisterModal({ origin: entry.validated.origin, domain, ownerPubkey: connectedPubkey });
   },
@@ -97,6 +105,7 @@ function startDiscovery() {
   if (pool) pool.close(activeRelays);
   operators.clear();
   domainStatus.clear();
+  settledRelays.clear();
   activeRelays = relays;
   activeSubscriptions = [];
   pool = new NostrTools.SimplePool();
@@ -128,9 +137,13 @@ function startDiscovery() {
       },
       oneose() {
         setRelayState(relay, "connected");
+        settledRelays.add(relay);
+        scheduleRenderOperators();
       },
       onclose(reasons) {
         setRelayState(relay, "error", reasons?.[0]);
+        settledRelays.add(relay);
+        scheduleRenderOperators();
       },
     });
     activeSubscriptions.push(sub);
@@ -150,8 +163,63 @@ function renderOperators() {
   const container = document.getElementById("operators");
   container.replaceChildren();
   const sorted = [...operators.values()].sort((a, b) => a.validated.origin.localeCompare(b.validated.origin));
+
+  let shown = 0;
+  let hidden = 0;
+  let pending = false;
+
   for (const entry of sorted) {
-    container.append(operatorCard(entry, handlers));
+    const pubkey = entry.event.pubkey;
+    const domains = entry.validated.announcement.domains;
+    const { verified, category } = classifyOperator(domains, domain => getDomainStatus(pubkey, domain));
+    if (category === "visible") {
+      container.append(operatorCard(entry, verified, handlers));
+      shown++;
+    } else if (category === "hidden") {
+      hidden++;
+    } else {
+      pending = true;
+    }
+  }
+
+  renderDiscoveryStatus(shown, hidden, pending);
+}
+
+function relaysSettled() {
+  return activeRelays.every(relay => settledRelays.has(relay));
+}
+
+/**
+ * Updates the "Discovering operators…" / "No operators found" placeholder
+ * and the muted "N operator(s) hidden (unverified)" line beneath the card
+ * grid. The placeholder disappears for good once at least one card is
+ * shown; before that, it reads "No operators found" only once every relay
+ * has settled (eose/closed) and no operator's domain checks are still in
+ * flight — otherwise it keeps reading "Discovering operators…".
+ */
+function renderDiscoveryStatus(shown, hidden, pending) {
+  const placeholder = document.getElementById("operators-placeholder");
+  const hiddenCount = document.getElementById("operators-hidden-count");
+  const settled = !pending && relaysSettled();
+
+  if (shown > 0) {
+    placeholder.classList.add("hidden");
+  } else if (!settled) {
+    placeholder.textContent = "Discovering operators…";
+    placeholder.classList.remove("hidden");
+  } else if (hidden === 0) {
+    placeholder.textContent = "No operators found";
+    placeholder.classList.remove("hidden");
+  } else {
+    // Nothing to show, but the hidden-count line below already explains why.
+    placeholder.classList.add("hidden");
+  }
+
+  if (hidden > 0) {
+    hiddenCount.textContent = `${hidden} operator${hidden === 1 ? "" : "s"} hidden (unverified)`;
+    hiddenCount.classList.remove("hidden");
+  } else {
+    hiddenCount.classList.add("hidden");
   }
 }
 
@@ -188,9 +256,18 @@ function setRelayState(relay, state, reason) {
 }
 
 async function verifyDomains(validated, event) {
+  // Reset every domain to "checking" up front (a changed event id means the
+  // domain list itself may have changed, and a previously-verified domain
+  // must be re-proven rather than assumed still good) — this can transiently
+  // drop a shown card back to pending/hidden until a fresh check lands.
   for (const domain of validated.announcement.domains) {
-    updateBadge(event.pubkey, domain, "checking");
-    updateBadge(event.pubkey, domain, await verifyDomain(domain, event.pubkey, validated.dtag));
+    domainStatus.set(`${event.pubkey}:${domain}`, "checking");
+  }
+  scheduleRenderOperators();
+  for (const domain of validated.announcement.domains) {
+    const state = await verifyDomain(domain, event.pubkey, validated.dtag);
+    domainStatus.set(`${event.pubkey}:${domain}`, state);
+    scheduleRenderOperators();
   }
 }
 
@@ -202,12 +279,6 @@ async function verifyDomain(domain, pubkey, dtag) {
     return doc.schema === 1 && doc.service_pubkey === pubkey &&
       doc.announcement === `30078:${pubkey}:${dtag}` ? "verified" : "mismatch";
   } catch { return "unreachable"; }
-}
-
-function updateBadge(pubkey, domain, state) {
-  domainStatus.set(`${pubkey}:${domain}`, state);
-  const el = document.getElementById(`badge-${pubkey}-${domain}`);
-  if (el) applyBadgeState(el, state);
 }
 
 function onRelaysChanged() {
