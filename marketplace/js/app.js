@@ -71,15 +71,23 @@ connectError.className = "basis-full text-right text-xs text-red-700 hidden";
 connectError.setAttribute("role", "alert");
 connectBtn.after(connectError);
 
+// Shared by the header button and the per-card Register button (see
+// handlers.onRegister below) so both paths update the same connected-pubkey
+// state and the same header UI — there is exactly one way to connect.
+async function doConnect() {
+  connectedPubkey = await connect();
+  connectBtn.textContent = `${NostrTools.nip19.npubEncode(connectedPubkey).slice(0, 12)}…`;
+  if (!document.getElementById("manage").classList.contains("hidden")) {
+    renderManage(document.getElementById("manage"), { operators, connectedPubkey });
+  }
+  return connectedPubkey;
+}
+
 connectBtn.addEventListener("click", async () => {
   connectError.classList.add("hidden");
   connectError.textContent = "";
   try {
-    connectedPubkey = await connect();
-    connectBtn.textContent = `${NostrTools.nip19.npubEncode(connectedPubkey).slice(0, 12)}…`;
-    if (!document.getElementById("manage").classList.contains("hidden")) {
-      renderManage(document.getElementById("manage"), { operators, connectedPubkey });
-    }
+    await doConnect();
   } catch (err) {
     connectError.textContent = err.message;
     connectError.classList.remove("hidden");
@@ -91,7 +99,20 @@ function getDomainStatus(pubkey, domain) {
 }
 
 const handlers = {
-  onRegister(entry, domain) {
+  // Register is Nostr-identity-only: with no connected identity yet, run the
+  // same connect() path the header button uses (updating the shared pubkey
+  // state and header UI) before opening the modal. A connect failure (no
+  // extension, user rejection) is surfaced next to the clicked button
+  // instead — the modal never opens without a signed-in identity.
+  async onRegister(entry, domain, { showError } = {}) {
+    if (!connectedPubkey) {
+      try {
+        await doConnect();
+      } catch {
+        showError?.("Connect a Nostr extension to register");
+        return;
+      }
+    }
     openRegisterModal({ origin: entry.validated.origin, domain, ownerPubkey: connectedPubkey });
   },
 };

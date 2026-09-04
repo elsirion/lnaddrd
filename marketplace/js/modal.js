@@ -1,9 +1,12 @@
 import {
   quote as apiQuote,
   registerFree as apiRegisterFree,
+  registerFreeUrl,
   registerStart as apiRegisterStart,
+  registerStartUrl,
   registerStatus as apiRegisterStatus,
 } from "./api.js";
+import { nip98Header } from "./nostr-auth.js";
 
 const INPUT_CLASS =
   "block w-full p-2.5 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 focus:ring-blue-500 focus:border-blue-500";
@@ -100,6 +103,9 @@ export function closeModal() {
  * Opens the registration modal for one operator domain.
  * `domain` is remote data (from the operator's Nostr announcement) and is
  * only ever placed via textContent, never interpolated into markup.
+ * `ownerPubkey` must already be a connected NIP-07 identity — app.js only
+ * calls this after a successful connect, since every registration request
+ * is now NIP-98-signed and carries this pubkey as `owner_pubkey`.
  */
 export function openRegisterModal({ origin, domain, ownerPubkey }) {
   closeModal();
@@ -258,13 +264,21 @@ function renderForm(body, { origin, domain, ownerPubkey }) {
       return;
     }
     submitBtn.disabled = true;
-    const payload = { domain, username, destination, ...(ownerPubkey && { owner_pubkey: ownerPubkey }) };
+    // Build the JSON body string ONCE and reuse the identical string for
+    // both the NIP-98 payload hash and the actual fetch body — signing a
+    // freshly re-serialized object could hash a different string than the
+    // one sent (key order, whitespace), breaking NIP-98 verification.
+    const bodyStr = JSON.stringify({ domain, username, destination, owner_pubkey: ownerPubkey });
     try {
       if (lastQuote.price_msat === 0) {
-        const result = await apiRegisterFree(origin, payload);
-        renderSuccess(body, result);
+        const url = registerFreeUrl(origin);
+        const authHeader = await nip98Header(url, "POST", bodyStr);
+        const result = await apiRegisterFree(origin, bodyStr, authHeader);
+        renderFreeSuccess(body, result);
       } else {
-        const result = await apiRegisterStart(origin, payload);
+        const url = registerStartUrl(origin);
+        const authHeader = await nip98Header(url, "POST", bodyStr);
+        const result = await apiRegisterStart(origin, bodyStr, authHeader);
         renderInvoice(body, origin, result);
       }
     } catch (err) {
@@ -276,10 +290,8 @@ function renderForm(body, { origin, domain, ownerPubkey }) {
 
 // --- step 2a: free registration / paid completion ----------------------
 
-/** Shared by the free-registration success path and a completed paid poll. */
-function renderSuccess(body, { address, management_token, active }) {
-  body.replaceChildren();
-
+/** The "Address: <value>" line shared by both success renderers below. */
+function addressParagraph(address) {
   const addressP = document.createElement("p");
   addressP.className = "text-sm text-gray-700";
   const addressLabel = document.createElement("span");
@@ -289,29 +301,35 @@ function renderSuccess(body, { address, management_token, active }) {
   addressValue.className = "font-mono";
   addressValue.textContent = address;
   addressP.append(addressLabel, addressValue);
-  body.append(addressP);
+  return addressP;
+}
 
-  const tokenLabel = document.createElement("p");
-  tokenLabel.className = "text-sm font-medium text-gray-700";
-  tokenLabel.textContent = "Management token";
-  body.append(tokenLabel);
+// Registration is now Nostr-identity-only, so a `management_token` field on
+// either response is ignored entirely: there is no legacy bearer-token UI
+// left to feed it into (see manage.js's NIP-98-only address management).
 
-  const pre = document.createElement("pre");
-  pre.className = "bg-gray-100 rounded p-3 text-sm break-all select-all";
-  pre.textContent = management_token;
-  body.append(pre, copyRow(management_token));
-
-  const warning = document.createElement("p");
-  warning.className = "text-sm font-semibold text-red-700";
-  warning.textContent = "Store this token now — it is shown once.";
-  body.append(warning);
+/** Free-registration success: address plus an active/pending confirmation. */
+function renderFreeSuccess(body, { address, active }) {
+  body.replaceChildren();
+  body.append(addressParagraph(address));
 
   if (active === false) {
     const note = document.createElement("p");
     note.className = "text-xs text-gray-500";
-    note.textContent = "Waiting for a Nostr relay acknowledgement.";
+    note.textContent = "Registered — waiting for a Nostr relay acknowledgement.";
     body.append(note);
+  } else {
+    const confirm = document.createElement("p");
+    confirm.className = "text-sm text-green-700";
+    confirm.textContent = "Registered and active.";
+    body.append(confirm);
   }
+}
+
+/** Paid-registration completion: address only. */
+function renderPaidSuccess(body, { address }) {
+  body.replaceChildren();
+  body.append(addressParagraph(address));
 }
 
 // --- step 2b: paid invoice + polling ------------------------------------
@@ -419,7 +437,7 @@ function renderInvoice(body, origin, { id, bolt11, amount_msat, expires_at }) {
         statusP.textContent = "Paid — waiting for relay acknowledgement…";
       } else if (result.state === "complete") {
         stop();
-        renderSuccess(body, result);
+        renderPaidSuccess(body, result);
       } else if (result.state === "expired") {
         showExpired();
       }

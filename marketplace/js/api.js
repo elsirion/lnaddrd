@@ -16,11 +16,21 @@ export async function apiFetch(url, options = {}) {
 export const quote = (origin, domain, username) =>
   apiFetch(`${origin}/api/v1/register/quote?domain=${encodeURIComponent(domain)}&username=${encodeURIComponent(username)}`);
 
-export const registerFree = (origin, body) =>
-  apiFetch(`${origin}/api/v1/register`, { method: "POST", body: JSON.stringify(body) });
+// Exported so callers that must sign the exact request URL (NIP-98's `u`
+// tag) build it identically to what this module fetches — the two can never
+// drift apart because there's only one place the path is spelled out.
+export const registerFreeUrl = (origin) => `${origin}/api/v1/register`;
+export const registerStartUrl = (origin) => `${origin}/api/v1/register/start`;
 
-export const registerStart = (origin, body) =>
-  apiFetch(`${origin}/api/v1/register/start`, { method: "POST", body: JSON.stringify(body) });
+// `bodyString` must be the exact, pre-serialized JSON string the caller
+// signed as the NIP-98 payload — this module sends it verbatim rather than
+// re-serializing an object, since re-serializing could produce a different
+// string (key order, whitespace) than the one that was hashed.
+export const registerFree = (origin, bodyString, authHeader) =>
+  apiFetch(registerFreeUrl(origin), { method: "POST", body: bodyString, headers: { authorization: authHeader } });
+
+export const registerStart = (origin, bodyString, authHeader) =>
+  apiFetch(registerStartUrl(origin), { method: "POST", body: bodyString, headers: { authorization: authHeader } });
 
 export const registerStatus = (origin, id) => apiFetch(`${origin}/api/v1/register/${id}`);
 

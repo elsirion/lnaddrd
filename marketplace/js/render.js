@@ -66,7 +66,8 @@ function httpsLink(url, text, className) {
  * verifiedDomains: the subset of announcement.domains that passed their
  *   well-known check (from visibility.js's classifyOperator) — the only
  *   domains this card, or the registration modal it opens, ever shows.
- * handlers: { onRegister(entry, domain) }
+ * handlers: { onRegister(entry, domain, { showError }) } — showError(message)
+ *   surfaces a connect-failure message next to the clicked Register button.
  */
 export function operatorCard(entry, verifiedDomains, handlers) {
   const { validated, event } = entry;
@@ -90,6 +91,13 @@ export function operatorCard(entry, verifiedDomains, handlers) {
 
   const domainList = document.createElement("div");
   domainList.className = "flex flex-col gap-2";
+
+  // Registration requires both capabilities: `registration-api-v1` for the
+  // JSON API itself and `nostr-auth` so the request can carry a NIP-98
+  // signature (the marketplace app no longer supports unauthenticated
+  // registration or linking out to an operator's own HTML form).
+  const capabilities = Array.isArray(announcement.capabilities) ? announcement.capabilities : [];
+  const canRegister = capabilities.includes("registration-api-v1") && capabilities.includes("nostr-auth");
 
   for (const domain of verifiedDomains) {
     const row = document.createElement("div");
@@ -116,22 +124,37 @@ export function operatorCard(entry, verifiedDomains, handlers) {
     const right = document.createElement("div");
     right.className = "flex flex-wrap items-center gap-2";
 
-    if (Array.isArray(announcement.capabilities) && announcement.capabilities.includes("registration-api-v1")) {
+    // Operators without both capabilities get an info-only row: no button,
+    // and (per the Nostr-only registration model) no link out to their own
+    // registration page either.
+    if (canRegister) {
       const registerBtn = document.createElement("button");
       registerBtn.type = "button";
       registerBtn.id = `register-${pubkey}-${domain}`;
       registerBtn.className =
         "text-white bg-blue-700 hover:bg-blue-800 font-medium rounded-lg text-xs px-3 py-1.5";
       registerBtn.textContent = "Register";
-      registerBtn.addEventListener("click", () => handlers.onRegister?.(entry, domain));
-      right.append(registerBtn);
-    } else {
-      const link = httpsLink(
-        announcement.registration_url,
-        "Register on operator's site",
-        "text-xs font-medium text-blue-700 hover:underline"
-      );
-      if (link) right.append(link);
+
+      // Sibling error slot for "connect failed" feedback (mirrors the
+      // header connect button's own error slot in app.js). Kept hidden
+      // until handlers.onRegister's showError callback fires; basis-full
+      // makes it wrap onto its own line in this flex row instead of
+      // squeezing the button.
+      const registerError = document.createElement("p");
+      registerError.className = "basis-full text-xs text-red-700 hidden";
+      registerError.setAttribute("role", "alert");
+
+      registerBtn.addEventListener("click", () => {
+        registerError.classList.add("hidden");
+        registerError.textContent = "";
+        handlers.onRegister?.(entry, domain, {
+          showError(message) {
+            registerError.textContent = message;
+            registerError.classList.remove("hidden");
+          },
+        });
+      });
+      right.append(registerBtn, registerError);
     }
 
     row.append(left, right);
