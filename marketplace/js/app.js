@@ -7,6 +7,13 @@ import { openRegisterModal } from "./modal.js";
 import { connect } from "./nostr-auth.js";
 import { renderManage } from "./manage.js";
 
+// The Manage tab button itself starts `hidden` in index.html (there is no
+// identity connected yet); doConnect() below reveals it. Its panel handles
+// the (normally unreachable, since the button is hidden) case of somehow
+// being activated while disconnected by rendering only a connect prompt —
+// see manage.js's renderManage().
+const manageTabBtn = document.querySelector('.tab-btn[data-tab="manage"]');
+
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -21,7 +28,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       document.getElementById('browse-panel').classList.remove('hidden');
     } else if (tab === 'manage') {
       document.getElementById('manage').classList.remove('hidden');
-      renderManage(document.getElementById('manage'), { operators, connectedPubkey });
+      renderManage(document.getElementById('manage'), { operators, connectedPubkey, getDomainStatus });
     }
 
     // Update button styles
@@ -77,8 +84,9 @@ connectBtn.after(connectError);
 async function doConnect() {
   connectedPubkey = await connect();
   connectBtn.textContent = `${NostrTools.nip19.npubEncode(connectedPubkey).slice(0, 12)}…`;
+  manageTabBtn.classList.remove("hidden");
   if (!document.getElementById("manage").classList.contains("hidden")) {
-    renderManage(document.getElementById("manage"), { operators, connectedPubkey });
+    renderManage(document.getElementById("manage"), { operators, connectedPubkey, getDomainStatus });
   }
   return connectedPubkey;
 }

@@ -1,25 +1,28 @@
-// Renders the "Manage" tab into a container element.
+// Renders the "Manage" tab: one aggregated table of every Lightning Address
+// the connected Nostr identity owns, fetched concurrently from every
+// verified operator that supports nostr-auth.
 //
 // Refresh policy: renderManage() rebuilds the whole section from scratch, so
 // app.js calls it only on two events — activating the Manage tab, and a
-// successful Nostr connect — rather than on every discovery update. This
-// keeps the operator picker fresh whenever a user actually looks at the tab
-// without wiping in-progress form input (typed destination, loaded address
-// table) every time a background relay event adds an operator.
+// successful Nostr connect (see app.js's tab-switch handler and doConnect())
+// — rather than on every discovery update. Within a render, row actions
+// (update/delete) re-fetch only the one operator they touched via
+// refreshOperator(), not the whole aggregate.
+//
+// This tab is Nostr-identity-only: there is no operator picker and no
+// manual domain/username/token fallback form. Every request against
+// `/api/v1/addresses`, `/lnaddress/update`, and `/lnaddress/remove` carries a
+// NIP-98 signature; there is no bearer-token path left in this file.
 import { nip98Header } from "./nostr-auth.js";
-import { listAddresses, updateAddress, removeAddress } from "./api.js";
+import { listAddresses, listAddressesUrl, updateAddress, updateAddressUrl, removeAddress, removeAddressUrl } from "./api.js";
+import { classifyOperator } from "./visibility.js";
 
 const INPUT_CLASS =
   "block w-full p-2.5 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 focus:ring-blue-500 focus:border-blue-500";
-const LABEL_CLASS = "block mb-2 text-sm font-medium text-gray-900";
-const PRIMARY_BUTTON_CLASS =
-  "text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 font-medium rounded-lg text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed";
 const SECONDARY_BUTTON_CLASS =
   "text-white bg-blue-700 hover:bg-blue-800 font-medium rounded-lg text-xs px-3 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed";
 const DANGER_BUTTON_CLASS =
   "text-white bg-red-700 hover:bg-red-800 font-medium rounded-lg text-xs px-3 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed";
-const DANGER_BUTTON_CLASS_WIDE =
-  "text-white bg-red-700 hover:bg-red-800 font-medium rounded-lg text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed";
 
 // The legacy `/lnaddress/*` endpoints return bare HTTP status codes with no
 // JSON body at all (docs/protocol/03-registration-api.md, "Management"), so
@@ -41,11 +44,21 @@ function describeLegacyError(message, table) {
   return table[message] ?? `Something went wrong: ${message}`;
 }
 
-/** A status/alert paragraph — the only way manage-tab feedback is surfaced. */
+/** A status/alert paragraph — used for per-row update/delete feedback. */
 function statusParagraph(text, variant) {
   const p = document.createElement("p");
   p.className = `text-sm ${variant === "error" ? "text-red-700" : "text-green-700"}`;
   p.setAttribute("role", variant === "error" ? "alert" : "status");
+  p.textContent = text;
+  return p;
+}
+
+/** A muted informational line — connect prompts, loading/empty states, the
+ * per-operator unreachable note. Never an alert: nothing here is a failure
+ * the user needs to act on beyond what the surrounding UI already shows. */
+function note(text) {
+  const p = document.createElement("p");
+  p.className = "text-sm text-gray-500";
   p.textContent = text;
   return p;
 }
@@ -55,119 +68,121 @@ function truncate(text, max = 40) {
 }
 
 /**
+ * Returns the operators eligible for address management: ≥1 verified domain
+ * (Task 3's classifyOperator, reusing the same live domain-status lookup the
+ * Browse tab renders from) AND the `nostr-auth` capability. Each item is
+ * `{ origin, name }`.
+ */
+function verifiedNostrAuthOperators(operators, getDomainStatus) {
+  const targets = [];
+  for (const entry of operators.values()) {
+    const { validated, event } = entry;
+    const capabilities = Array.isArray(validated.announcement.capabilities) ? validated.announcement.capabilities : [];
+    if (!capabilities.includes("nostr-auth")) continue;
+    const domains = validated.announcement.domains;
+    const { category } = classifyOperator(domains, domain => getDomainStatus(event.pubkey, domain));
+    if (category !== "visible") continue;
+    targets.push({ origin: validated.origin, name: validated.announcement.name || validated.origin });
+  }
+  return targets.sort((a, b) => a.origin.localeCompare(b.origin));
+}
+
+async function fetchOperatorAddresses(target) {
+  const url = listAddressesUrl(target.origin);
+  const authHeader = await nip98Header(url, "GET");
+  const { addresses } = await listAddresses(target.origin, authHeader);
+  return addresses;
+}
+
+function rowSort(a, b) {
+  return `${a.username}@${a.domain}`.localeCompare(`${b.username}@${b.domain}`) || a.operator.origin.localeCompare(b.operator.origin);
+}
+
+/**
  * Renders the whole Manage tab into `container`.
  * `operators`: the shared discovery Map (`${pubkey}:${dtag}` -> {validated, event}).
  * `connectedPubkey`: hex pubkey from a NIP-07 connect, or null.
+ * `getDomainStatus(pubkey, domain)`: Task 3's per-domain well-known status
+ *   lookup, passed through so this tab's operator eligibility matches
+ *   exactly what the Browse tab currently shows as verified.
  */
-export function renderManage(container, { operators, connectedPubkey }) {
+export function renderManage(container, { operators, connectedPubkey, getDomainStatus }) {
   container.replaceChildren();
 
-  const entries = [...operators.values()].sort((a, b) => a.validated.origin.localeCompare(b.validated.origin));
-
-  const pickerSection = document.createElement("div");
-  const pickerLabel = document.createElement("label");
-  pickerLabel.className = LABEL_CLASS;
-  pickerLabel.htmlFor = "manage-operator";
-  pickerLabel.textContent = "Operator";
-  const picker = document.createElement("select");
-  picker.id = "manage-operator";
-  picker.className = INPUT_CLASS;
-  for (const entry of entries) {
-    const opt = document.createElement("option");
-    opt.value = entry.validated.origin;
-    opt.textContent = entry.validated.announcement.name || entry.validated.origin;
-    picker.append(opt);
-  }
-  pickerSection.append(pickerLabel, picker);
-  container.append(pickerSection);
-
-  if (entries.length === 0) {
-    const note = document.createElement("p");
-    note.className = "text-sm text-gray-500";
-    note.textContent = "No operators discovered yet.";
-    container.append(note);
-  }
-
-  const currentOrigin = () => picker.value || null;
-
-  if (connectedPubkey) {
-    container.append(renderConnectedSection(currentOrigin, connectedPubkey));
-  }
-
-  container.append(renderTokenSection(currentOrigin));
-}
-
-// --- connected (NIP-07 / NIP-98) section --------------------------------
-
-function renderConnectedSection(currentOrigin, connectedPubkey) {
-  const section = document.createElement("section");
-  section.className = "rounded-lg border border-gray-200 bg-white p-4 shadow-sm space-y-3";
-
-  const heading = document.createElement("h3");
-  heading.className = "text-sm font-semibold text-gray-700";
-  heading.textContent = "My addresses";
-  section.append(heading);
-
-  const who = document.createElement("p");
-  who.className = "text-xs text-gray-500";
-  who.textContent = `Connected as ${window.NostrTools.nip19.npubEncode(connectedPubkey).slice(0, 12)}…`;
-  section.append(who);
-
-  const loadBtn = document.createElement("button");
-  loadBtn.type = "button";
-  loadBtn.className = PRIMARY_BUTTON_CLASS;
-  loadBtn.textContent = "Load my addresses";
-  section.append(loadBtn);
-
-  const status = document.createElement("div");
-  section.append(status);
-
-  const tableWrap = document.createElement("div");
-  tableWrap.className = "overflow-x-auto";
-  section.append(tableWrap);
-
-  async function load() {
-    status.replaceChildren();
-    const origin = currentOrigin();
-    if (!origin) {
-      status.replaceChildren(statusParagraph("Select an operator first.", "error"));
-      return;
-    }
-    loadBtn.disabled = true;
-    try {
-      const url = `${origin}/api/v1/addresses`;
-      const authHeader = await nip98Header(url, "GET");
-      const { addresses } = await listAddresses(origin, authHeader);
-      renderAddressTable(tableWrap, origin, addresses, load);
-    } catch (err) {
-      tableWrap.replaceChildren();
-      status.replaceChildren(statusParagraph(`Could not load addresses: ${err.message}`, "error"));
-    } finally {
-      loadBtn.disabled = false;
-    }
-  }
-
-  loadBtn.addEventListener("click", load);
-
-  return section;
-}
-
-function renderAddressTable(container, origin, addresses, refresh) {
-  container.replaceChildren();
-  if (!addresses.length) {
-    const p = document.createElement("p");
-    p.className = "text-sm text-gray-500";
-    p.textContent = "No addresses found for this key.";
-    container.append(p);
+  if (!connectedPubkey) {
+    container.append(note("Connect Nostr to manage your addresses."));
     return;
   }
 
+  const targets = verifiedNostrAuthOperators(operators, getDomainStatus);
+
+  const statusEl = document.createElement("div");
+  statusEl.className = "space-y-1";
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "overflow-x-auto";
+  tableWrap.append(note("Loading your addresses…"));
+  container.append(statusEl, tableWrap);
+
+  // In-memory rows for the aggregated table, one entry per address, each
+  // tagged with the operator it came from. Kept here (rather than re-derived
+  // from the DOM) so refreshOperator() can replace just one operator's slice
+  // without re-fetching every other operator.
+  let rows = [];
+
+  function renderRows() {
+    tableWrap.replaceChildren();
+    if (rows.length === 0) {
+      tableWrap.append(note("No addresses found for this identity."));
+      return;
+    }
+    tableWrap.append(buildTable(rows, refreshOperator));
+  }
+
+  async function refreshOperator(target) {
+    try {
+      const addresses = await fetchOperatorAddresses(target);
+      rows = rows.filter(r => r.operator.origin !== target.origin);
+      for (const addr of addresses) rows.push({ ...addr, operator: target });
+      rows.sort(rowSort);
+      renderRows();
+    } catch (err) {
+      // The action itself already succeeded or failed and reported that
+      // separately; this is only the follow-up re-fetch. Drop the
+      // operator's rows rather than show them possibly stale, and say why.
+      rows = rows.filter(r => r.operator.origin !== target.origin);
+      renderRows();
+      statusEl.append(note(`Could not refresh ${target.origin}: ${err.message}`));
+    }
+  }
+
+  (async () => {
+    const settled = await Promise.allSettled(targets.map(fetchOperatorAddresses));
+    const next = [];
+    let failures = 0;
+    settled.forEach((result, i) => {
+      if (result.status === "fulfilled") {
+        for (const addr of result.value) next.push({ ...addr, operator: targets[i] });
+      } else {
+        failures++;
+      }
+    });
+    next.sort(rowSort);
+    rows = next;
+    renderRows();
+    statusEl.replaceChildren();
+    if (failures > 0) {
+      statusEl.append(note(`Could not reach ${failures} operator${failures === 1 ? "" : "s"}.`));
+    }
+  })();
+}
+
+function buildTable(rows, refreshOperator) {
   const table = document.createElement("table");
   table.className = "min-w-full text-sm divide-y divide-gray-200";
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const label of ["Address", "Destination", "Actions"]) {
+  for (const label of ["Address", "Destination", "Operator", "Actions"]) {
     const th = document.createElement("th");
     th.className = "px-2 py-1 text-left text-xs font-medium text-gray-500";
     th.textContent = label;
@@ -178,27 +193,32 @@ function renderAddressTable(container, origin, addresses, refresh) {
 
   const tbody = document.createElement("tbody");
   tbody.className = "divide-y divide-gray-100";
-  for (const addr of addresses) {
-    tbody.append(addressRow(origin, addr, refresh));
+  for (const row of rows) {
+    tbody.append(addressRow(row, refreshOperator));
   }
   table.append(tbody);
 
-  container.append(table);
+  return table;
 }
 
-function addressRow(origin, addr, refresh) {
+function addressRow({ domain, username, destination, operator }, refreshOperator) {
   const row = document.createElement("tr");
 
   const addressCell = document.createElement("td");
   addressCell.className = "px-2 py-1 font-mono align-top";
-  addressCell.textContent = `${addr.username}@${addr.domain}`;
+  addressCell.textContent = `${username}@${domain}`;
   row.append(addressCell);
 
   const destCell = document.createElement("td");
   destCell.className = "px-2 py-1 font-mono text-gray-600 align-top";
-  destCell.textContent = truncate(addr.destination);
-  destCell.title = addr.destination;
+  destCell.textContent = truncate(destination);
+  destCell.title = destination;
   row.append(destCell);
+
+  const operatorCell = document.createElement("td");
+  operatorCell.className = "px-2 py-1 text-gray-500 align-top";
+  operatorCell.textContent = operator.origin;
+  row.append(operatorCell);
 
   const actionsCell = document.createElement("td");
   actionsCell.className = "px-2 py-1 space-y-1 align-top";
@@ -226,161 +246,49 @@ function addressRow(origin, addr, refresh) {
 
   confirmBtn.addEventListener("click", async () => {
     status.replaceChildren();
-    const destination = editInput.value.trim();
-    if (!destination) {
+    const newDestination = editInput.value.trim();
+    if (!newDestination) {
       status.replaceChildren(statusParagraph("Enter a new destination.", "error"));
       return;
     }
     confirmBtn.disabled = true;
+    deleteBtn.disabled = true;
     try {
-      // `bodyObj` is passed unmutated to updateAddress(), which JSON.stringifies
-      // it itself for the fetch body — that call produces the exact same
-      // string as `bodyStr` below (same object, same key order), which is
-      // what the NIP-98 payload tag must hash.
-      const bodyObj = { domain: addr.domain, username: addr.username, destination };
-      const bodyStr = JSON.stringify(bodyObj);
-      const url = `${origin}/lnaddress/update`;
+      // Build the JSON body string ONCE and reuse the identical string for
+      // both the NIP-98 payload hash and the actual fetch body (see
+      // modal.js's registration flow for the same discipline) — signing a
+      // freshly re-serialized object could hash a different string than the
+      // one sent (key order, whitespace), breaking NIP-98 verification.
+      const bodyStr = JSON.stringify({ domain, username, destination: newDestination });
+      const url = updateAddressUrl(operator.origin);
       const authHeader = await nip98Header(url, "PUT", bodyStr);
-      await updateAddress(origin, bodyObj, authHeader);
+      await updateAddress(operator.origin, bodyStr, authHeader);
       status.replaceChildren(statusParagraph("Updated.", "status"));
-      await refresh();
+      await refreshOperator(operator);
     } catch (err) {
       status.replaceChildren(statusParagraph(describeLegacyError(err.message, UPDATE_ERRORS), "error"));
       confirmBtn.disabled = false;
+      deleteBtn.disabled = false;
     }
   });
 
   deleteBtn.addEventListener("click", async () => {
     status.replaceChildren();
-    if (!confirm(`Delete ${addr.username}@${addr.domain}? This cannot be undone.`)) return;
+    if (!confirm(`Delete ${username}@${domain}? This cannot be undone.`)) return;
+    confirmBtn.disabled = true;
     deleteBtn.disabled = true;
     try {
-      const bodyObj = { domain: addr.domain, username: addr.username };
-      const bodyStr = JSON.stringify(bodyObj);
-      const url = `${origin}/lnaddress/remove`;
+      const bodyStr = JSON.stringify({ domain, username });
+      const url = removeAddressUrl(operator.origin);
       const authHeader = await nip98Header(url, "DELETE", bodyStr);
-      await removeAddress(origin, bodyObj, authHeader);
-      await refresh();
+      await removeAddress(operator.origin, bodyStr, authHeader);
+      await refreshOperator(operator);
     } catch (err) {
       status.replaceChildren(statusParagraph(describeLegacyError(err.message, REMOVE_ERRORS), "error"));
+      confirmBtn.disabled = false;
       deleteBtn.disabled = false;
     }
   });
 
   return row;
-}
-
-// --- token fallback section (always visible) ----------------------------
-
-function renderTokenSection(currentOrigin) {
-  const section = document.createElement("section");
-  section.className = "rounded-lg border border-gray-200 bg-white p-4 shadow-sm space-y-3";
-
-  const heading = document.createElement("h3");
-  heading.className = "text-sm font-semibold text-gray-700";
-  heading.textContent = "Manage with a token";
-  section.append(heading);
-
-  const note = document.createElement("p");
-  note.className = "text-xs text-gray-500";
-  note.textContent = "Use the management token you received at registration, against the operator selected above.";
-  section.append(note);
-
-  const fields = document.createElement("div");
-  fields.className = "grid gap-3 sm:grid-cols-2";
-  section.append(fields);
-
-  function field(id, label, type = "text") {
-    const wrap = document.createElement("div");
-    const l = document.createElement("label");
-    l.className = LABEL_CLASS;
-    l.htmlFor = id;
-    l.textContent = label;
-    const input = document.createElement("input");
-    input.id = id;
-    input.type = type;
-    input.autocomplete = "off";
-    input.className = INPUT_CLASS;
-    wrap.append(l, input);
-    fields.append(wrap);
-    return input;
-  }
-
-  const domainInput = field("manage-token-domain", "Domain");
-  const usernameInput = field("manage-token-username", "Username");
-  const tokenInput = field("manage-token-token", "Management token", "password");
-  const destInput = field("manage-token-destination", "New destination");
-
-  const buttonRow = document.createElement("div");
-  buttonRow.className = "flex flex-wrap gap-2";
-  const updateBtn = document.createElement("button");
-  updateBtn.type = "button";
-  updateBtn.className = PRIMARY_BUTTON_CLASS;
-  updateBtn.textContent = "Update";
-  const deleteBtn = document.createElement("button");
-  deleteBtn.type = "button";
-  deleteBtn.className = DANGER_BUTTON_CLASS_WIDE;
-  deleteBtn.textContent = "Delete";
-  buttonRow.append(updateBtn, deleteBtn);
-  section.append(buttonRow);
-
-  const status = document.createElement("div");
-  section.append(status);
-
-  function readCommon() {
-    return {
-      origin: currentOrigin(),
-      domain: domainInput.value.trim(),
-      username: usernameInput.value.trim(),
-      authentication_token: tokenInput.value.trim(),
-    };
-  }
-
-  updateBtn.addEventListener("click", async () => {
-    status.replaceChildren();
-    const { origin, domain, username, authentication_token } = readCommon();
-    const destination = destInput.value.trim();
-    if (!origin) {
-      status.replaceChildren(statusParagraph("Select an operator first.", "error"));
-      return;
-    }
-    if (!domain || !username || !authentication_token || !destination) {
-      status.replaceChildren(statusParagraph("Fill in domain, username, token, and new destination.", "error"));
-      return;
-    }
-    updateBtn.disabled = true;
-    try {
-      await updateAddress(origin, { domain, username, destination, authentication_token });
-      status.replaceChildren(statusParagraph("Updated.", "status"));
-    } catch (err) {
-      status.replaceChildren(statusParagraph(describeLegacyError(err.message, UPDATE_ERRORS), "error"));
-    } finally {
-      updateBtn.disabled = false;
-    }
-  });
-
-  deleteBtn.addEventListener("click", async () => {
-    status.replaceChildren();
-    const { origin, domain, username, authentication_token } = readCommon();
-    if (!origin) {
-      status.replaceChildren(statusParagraph("Select an operator first.", "error"));
-      return;
-    }
-    if (!domain || !username || !authentication_token) {
-      status.replaceChildren(statusParagraph("Fill in domain, username, and token.", "error"));
-      return;
-    }
-    if (!confirm(`Delete ${username}@${domain}? This cannot be undone.`)) return;
-    deleteBtn.disabled = true;
-    try {
-      await removeAddress(origin, { domain, username, authentication_token });
-      status.replaceChildren(statusParagraph("Deleted.", "status"));
-    } catch (err) {
-      status.replaceChildren(statusParagraph(describeLegacyError(err.message, REMOVE_ERRORS), "error"));
-    } finally {
-      deleteBtn.disabled = false;
-    }
-  });
-
-  return section;
 }

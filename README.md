@@ -261,11 +261,20 @@ an event by landing on a different replica.
 ## Marketplace
 
 `marketplace/` is a static, single-page client that discovers operators over
-Nostr and lets a wallet or user register and manage a Lightning Address
+Nostr and lets a Nostr identity register and manage a Lightning Address
 without visiting any one operator's site first. It has no build step and no
 backend of its own: it talks directly to relays (for discovery) and to
-whichever operator's [HTTP API](#http-api) the user picks (for registration
-and management).
+whichever operator's [HTTP API](#http-api) hosts the address (for
+registration and management).
+
+The app is Nostr-identity-only: a NIP-07 browser extension is required both
+to register an address and to manage one afterward, and every registration
+and management request it sends is NIP-98-signed with that identity. The app
+never displays or asks for a Lightning Address management token — there is
+no token-fallback form. An operator's own hosted HTML registration flow is a
+separate thing this app does not touch; it still issues tokens there for
+wallet-less users who register directly with that operator instead of
+through the marketplace.
 
 The canonical deployment lives at <https://mkt.lnaddr.org>, published by the
 `marketplace.yml` GitHub Actions workflow: every push to `master` that touches
@@ -287,9 +296,7 @@ The page is stateless by design: all of its state (selected relays, which
 tab is active) lives in the URL or in memory, and it persists nothing to
 `localStorage`, `sessionStorage`, or cookies. A NIP-07 browser extension
 supplies the user's Nostr key on demand (to connect an identity and to sign
-NIP-98 requests); the key material itself never leaves the extension, and a
-Lightning Address management token pasted into the token-fallback form lives
-only in that page load's memory. See the
+NIP-98 requests); the key material itself never leaves the extension. See the
 [service announcement](docs/protocol/02-service-announcements.md) and
 [registration API](docs/protocol/03-registration-api.md) microstandards for
 the discovery and API contracts the marketplace implements against.

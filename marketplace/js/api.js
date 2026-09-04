@@ -35,28 +35,31 @@ export const registerStart = (origin, bodyString, authHeader) =>
 export const registerStatus = (origin, id) => apiFetch(`${origin}/api/v1/register/${id}`);
 
 // GET /api/v1/addresses requires a NIP-98 header; there is no fallback (see
-// docs/protocol/03-registration-api.md).
+// docs/protocol/03-registration-api.md). URL exported for the same reason as
+// registerFreeUrl/registerStartUrl above: signing the NIP-98 `u` tag and
+// issuing the fetch must use the textually identical URL.
+export const listAddressesUrl = (origin) => `${origin}/api/v1/addresses`;
 export const listAddresses = (origin, authHeader) =>
-  apiFetch(`${origin}/api/v1/addresses`, { headers: { authorization: authHeader } });
+  apiFetch(listAddressesUrl(origin), { headers: { authorization: authHeader } });
 
 // The two endpoints below are the legacy `/lnaddress` surface: unlike
 // `/api/v1`, their error responses are bare HTTP status codes with no JSON
 // body at all (not even `{"error": "..."}`), so apiFetch's generic
 // `HTTP <status>` fallback message is what callers see on failure — manage.js
-// maps those statuses to endpoint-specific human text. Both accept either a
-// NIP-98 `authHeader` (proof of ownership) or a body `authentication_token`;
-// callers pass exactly one.
+// maps those statuses to endpoint-specific human text. The marketplace app
+// is Nostr-identity-only, so both endpoints now require a NIP-98
+// `authHeader`; the legacy body `authentication_token` fallback has no
+// caller left and has been removed.
 
-export const updateAddress = (origin, body, authHeader) =>
-  apiFetch(`${origin}/lnaddress/update`, {
-    method: "PUT",
-    body: JSON.stringify(body),
-    headers: authHeader ? { authorization: authHeader } : {},
-  });
+export const updateAddressUrl = (origin) => `${origin}/lnaddress/update`;
+export const removeAddressUrl = (origin) => `${origin}/lnaddress/remove`;
 
-export const removeAddress = (origin, body, authHeader) =>
-  apiFetch(`${origin}/lnaddress/remove`, {
-    method: "DELETE",
-    body: JSON.stringify(body),
-    headers: authHeader ? { authorization: authHeader } : {},
-  });
+// `bodyString` must be the exact, pre-serialized JSON string the caller
+// signed as the NIP-98 payload (same discipline as registerFree/registerStart
+// above) — sent verbatim rather than re-serialized, so it can never diverge
+// from the string that was hashed.
+export const updateAddress = (origin, bodyString, authHeader) =>
+  apiFetch(updateAddressUrl(origin), { method: "PUT", body: bodyString, headers: { authorization: authHeader } });
+
+export const removeAddress = (origin, bodyString, authHeader) =>
+  apiFetch(removeAddressUrl(origin), { method: "DELETE", body: bodyString, headers: { authorization: authHeader } });
