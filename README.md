@@ -267,8 +267,12 @@ backend of its own: it talks directly to relays (for discovery) and to
 whichever operator's [HTTP API](#http-api) the user picks (for registration
 and management).
 
-Host it on any static file server — GitHub Pages, a CDN, `python3 -m http.server`,
-or anything else that serves plain files over HTTPS. For local development:
+The canonical deployment lives at <https://mkt.lnaddr.org>, published by the
+`marketplace.yml` GitHub Actions workflow: every push to `master` that touches
+`marketplace/` runs the JS tests and deploys the directory as-is to GitHub
+Pages. But it is not special — host it on any static file server: GitHub
+Pages, a CDN, `python3 -m http.server`, or anything else that serves plain
+files over HTTPS. For local development:
 
 ```sh
 just marketplace-serve   # http://localhost:8081
