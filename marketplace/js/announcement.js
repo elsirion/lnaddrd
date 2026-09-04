@@ -96,7 +96,19 @@ export function validateAnnouncement(event, nowSecs) {
     return { ok: false, error: "Registration URL has another origin" };
   }
 
-  // Check expiration tags
+  // Validate terms_url if present (must be HTTPS)
+  if (announcement.terms_url) {
+    try {
+      const termsUrl = new URL(announcement.terms_url);
+      if (termsUrl.protocol !== "https:") {
+        return { ok: false, error: "Terms URL must use HTTPS" };
+      }
+    } catch {
+      return { ok: false, error: "Terms URL must use HTTPS" };
+    }
+  }
+
+  // Check expiration tags (strict integer parsing)
   if (event.tags) {
     for (const tag of event.tags) {
       if (tag[0] === "expiration") {
@@ -104,10 +116,11 @@ export function validateAnnouncement(event, nowSecs) {
         if (!expirationStr) {
           return { ok: false, error: "Malformed expiration tag" };
         }
-        const expiration = parseInt(expirationStr, 10);
-        if (isNaN(expiration)) {
+        // Strict integer check: must be pure decimal digits
+        if (!/^\d+$/.test(expirationStr)) {
           return { ok: false, error: "Malformed expiration tag" };
         }
+        const expiration = Number(expirationStr);
         if (expiration <= nowSecs) {
           return { ok: false, error: "Announcement is expired" };
         }

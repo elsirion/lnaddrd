@@ -55,3 +55,14 @@ test("upsert keeps newest per coordinate", () => {
   assert.equal(map.size, 1);
   assert.equal([...map.values()][0].event.created_at, 1100);
 });
+test("terms_url must use HTTPS", () => {
+  // HTTP terms_url fails
+  assert.equal(validateAnnouncement(makeEvent({}, { terms_url: "http://insecure.example/terms" }), 1500).ok, false);
+  // HTTPS terms_url passes
+  const result = validateAnnouncement(makeEvent({}, { terms_url: "https://ok.example/terms" }), 1500);
+  assert.equal(result.ok, true);
+});
+test("expiration tag must be pure decimal integer", () => {
+  // Malformed expiration tag with non-numeric suffix fails
+  assert.equal(validateAnnouncement(makeEvent({ tags: [["d", `lnaddrd:service:v1:${ORIGIN}`], ["t", "lightning-address-service"], ["expiration", "2000xyz"]] }), 1500).ok, false);
+});
