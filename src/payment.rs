@@ -55,10 +55,8 @@ impl DestinationValidator for PaymentClient {
 
 impl PaymentClient {
     pub async fn resolve(&self, destination: &Destination) -> Result<PayResponse> {
-        match self.http.get_json(&destination.url()).await? {
-            LnUrlResponse::LnUrlPayResponse(pay) => Ok(pay),
-            _ => bail!("Destination does not return an LNURL-pay response"),
-        }
+        let json: serde_json::Value = self.http.get_json(&destination.url()).await?;
+        decode_pay_response(json)
     }
 
     pub async fn invoice(&self, pay: &PayResponse, amount_msat: u64) -> Result<VerifiableInvoice> {
@@ -200,6 +198,25 @@ pub fn recipient_fingerprint(policy: &PaymentPolicyRecord) -> Result<String> {
     )?)))
 }
 
+/// Decodes a raw LNURL wire response into a [`PayResponse`], bailing on any
+/// non-pay LNURL variant.
+///
+/// Real LNURL-pay wire responses are flat, tag-discriminated JSON objects
+/// (LUD-06), not the externally-tagged enum shape `serde` would derive for
+/// `lnurl::LnUrlResponse`. `lnurl::decode_ln_url_response_from_json` decodes
+/// the wire format correctly by inspecting the `"tag"` field itself.
+fn decode_pay_response(json: serde_json::Value) -> Result<PayResponse> {
+    match lnurl::decode_ln_url_response_from_json(json).map_err(anyhow::Error::from)? {
+        LnUrlResponse::LnUrlPayResponse(pay) => Ok(pay),
+        LnUrlResponse::LnUrlWithdrawResponse(_) => {
+            bail!("Destination does not return an LNURL-pay response")
+        }
+        LnUrlResponse::LnUrlChannelResponse(_) => {
+            bail!("Destination does not return an LNURL-pay response")
+        }
+    }
+}
+
 pub fn parse_policy(destination: &str, tiers: &str) -> Result<PaymentPolicyRecord> {
     let destination = Destination::from_str(destination)?;
     let tiers = tiers
@@ -292,5 +309,51 @@ mod tests {
         assert_eq!(policy_price(&policy, 3), Some(10));
         assert_eq!(policy_price(&policy, 65), None);
         assert_eq!(policy_fingerprint(&policy).unwrap().len(), 64);
+    }
+
+    fn flat_pay_request_json() -> serde_json::Value {
+        serde_json::json!({
+            "tag": "payRequest",
+            "callback": "https://x/cb",
+            "minSendable": 1000,
+            "maxSendable": 100000,
+            "metadata": "[[\"text/plain\",\"x\"]]",
+        })
+    }
+
+    /// RED evidence: real LNURL-pay wire JSON is a flat, tag-discriminated
+    /// object (LUD-06). `lnurl::LnUrlResponse` derives plain (externally
+    /// tagged) `Deserialize`, so decoding this flat shape straight into it
+    /// -- which is what the old buggy code path did via `get_json` -- fails.
+    /// This is the exact defect `decode_pay_response` below works around by
+    /// going through `lnurl::decode_ln_url_response_from_json` instead.
+    #[test]
+    fn flat_wire_json_does_not_deserialize_as_externally_tagged_enum() {
+        let result: Result<LnUrlResponse, _> = serde_json::from_value(flat_pay_request_json());
+        assert!(
+            result.is_err(),
+            "flat LNURL wire JSON must not decode via plain serde derive"
+        );
+    }
+
+    #[test]
+    fn decode_pay_response_accepts_flat_pay_request_json() {
+        let pay = decode_pay_response(flat_pay_request_json()).unwrap();
+        assert_eq!(pay.callback, "https://x/cb");
+        assert_eq!(pay.min_sendable, 1000);
+        assert_eq!(pay.max_sendable, 100000);
+    }
+
+    #[test]
+    fn decode_pay_response_rejects_withdraw_response() {
+        let withdraw = serde_json::json!({
+            "tag": "withdrawRequest",
+            "callback": "https://x/cb",
+            "k1": "abc",
+            "minWithdrawable": 1000,
+            "maxWithdrawable": 100000,
+            "defaultDescription": "test",
+        });
+        assert!(decode_pay_response(withdraw).is_err());
     }
 }
