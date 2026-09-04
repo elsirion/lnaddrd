@@ -127,7 +127,7 @@ export function operatorCard(entry, handlers) {
     const right = document.createElement("div");
     right.className = "flex flex-wrap items-center gap-2";
 
-    if (announcement.capabilities?.includes("registration-api-v1")) {
+    if (Array.isArray(announcement.capabilities) && announcement.capabilities.includes("registration-api-v1")) {
       const registerBtn = document.createElement("button");
       registerBtn.type = "button";
       registerBtn.id = `register-${pubkey}-${domain}`;

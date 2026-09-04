@@ -40,6 +40,7 @@ const operators = new Map();
 const domainStatus = new Map();
 let pool = null;
 let activeRelays = [];
+let activeSubscriptions = [];
 let renderTimer = null;
 
 const handlers = {
@@ -62,31 +63,51 @@ const handlers = {
 
 function startDiscovery() {
   const relays = currentRelays();
+  // Close previous per-relay subscriptions, then the underlying relay
+  // connections themselves (subscription close() only sends CLOSE for the
+  // REQ; the WebSocket connections are cached on the pool by URL).
+  activeSubscriptions.forEach(sub => sub.close());
   if (pool) pool.close(activeRelays);
   operators.clear();
   domainStatus.clear();
   activeRelays = relays;
+  activeSubscriptions = [];
   pool = new NostrTools.SimplePool();
-  const now = Math.floor(Date.now() / 1000);
-  pool.subscribeMany(relays, [{ kinds: [ANNOUNCEMENT_KIND], "#t": [ANNOUNCEMENT_TAG] }], {
-    onevent(event) {
-      if (!NostrTools.verifyEvent(event)) return;
-      const validated = validateAnnouncement(event, now);
-      const before = operators.get(`${event.pubkey}:${validated.dtag ?? ""}`);
-      upsertByCoordinate(operators, validated, event);
-      scheduleRenderOperators();
-      if (validated.ok && !before) verifyDomains(validated, event);
-    },
-    oneose() {
-      relays.forEach(relay => setRelayState(relay, "connected"));
-    },
-    onclose(reasons) {
-      reasons.forEach((reason, i) => {
-        if (reason) setRelayState(relays[i], "error", reason);
-      });
-    },
-  });
   renderRelayStatus();
+  const now = Math.floor(Date.now() / 1000);
+  const filter = { kinds: [ANNOUNCEMENT_KIND], "#t": [ANNOUNCEMENT_TAG] };
+  // Subscribe per relay (rather than one subscribeMany call across all
+  // relays) so each relay's chip reflects only its own connection state.
+  // The bundled SimplePool aggregates oneose/onclose across every relay in
+  // a single subscribeMany call - including relays that never connected -
+  // which would otherwise paint a never-connected relay green.
+  for (const relay of relays) {
+    setRelayState(relay, "checking");
+    const sub = pool.subscribeMany([relay], [filter], {
+      onevent(event) {
+        if (!NostrTools.verifyEvent(event)) return;
+        const validated = validateAnnouncement(event, now);
+        const key = `${event.pubkey}:${validated.dtag ?? ""}`;
+        const before = operators.get(key);
+        upsertByCoordinate(operators, validated, event);
+        const after = operators.get(key);
+        scheduleRenderOperators();
+        // Re-verify domains for brand-new coordinates, and for republished
+        // announcements whose stored event actually changed (so updated
+        // domain lists get checked too), but not for duplicate deliveries
+        // of the same event arriving from another relay.
+        const changed = validated.ok && (!before || before.event.id !== after.event.id);
+        if (changed) verifyDomains(validated, event);
+      },
+      oneose() {
+        setRelayState(relay, "connected");
+      },
+      onclose(reasons) {
+        setRelayState(relay, "error", reasons?.[0]);
+      },
+    });
+    activeSubscriptions.push(sub);
+  }
   renderOperators();
 }
 
@@ -115,21 +136,26 @@ function renderRelayStatus() {
   relayChips.clear();
   for (const relay of currentRelays()) {
     const chip = document.createElement("span");
-    chip.className = "rounded px-2.5 py-0.5 text-xs font-medium font-mono bg-gray-100 text-gray-600";
+    chip.className = `${RELAY_CHIP_BASE} bg-gray-100 text-gray-600`;
     chip.textContent = relay;
     container.append(chip);
     relayChips.set(relay, chip);
   }
 }
 
+const RELAY_CHIP_BASE = "rounded px-2.5 py-0.5 text-xs font-medium font-mono";
+
 function setRelayState(relay, state, reason) {
   const chip = relayChips.get(relay);
   if (!chip) return;
   if (state === "connected") {
-    chip.className = "rounded px-2.5 py-0.5 text-xs font-medium font-mono bg-green-100 text-green-800";
+    chip.className = `${RELAY_CHIP_BASE} bg-green-100 text-green-800`;
+    chip.textContent = relay;
+  } else if (state === "checking") {
+    chip.className = `${RELAY_CHIP_BASE} bg-blue-100 text-blue-800`;
     chip.textContent = relay;
   } else {
-    chip.className = "rounded px-2.5 py-0.5 text-xs font-medium font-mono bg-red-100 text-red-800";
+    chip.className = `${RELAY_CHIP_BASE} bg-red-100 text-red-800`;
     chip.textContent = reason ? `${relay} (${reason})` : relay;
   }
 }
