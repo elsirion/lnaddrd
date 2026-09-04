@@ -77,6 +77,13 @@ another HTTPS origin. Domains are normalized as in the main specification,
 unique, and sorted lexicographically. Pricing is an informational snapshot;
 the service's live quote is authoritative.
 
+The origin host and every entry of `domains` MUST be a public registrable DNS
+name: at least two dot-separated labels, each 1–63 characters of lowercase
+`a-z0-9-` not starting or ending with `-`, whose final label is neither
+all-digits nor one of `localhost`, `local`, `internal`, `test`, `invalid`, or
+`example`. Consumers MUST reject non-conforming announcements; producers MUST
+NOT publish them.
+
 Allowed initial capabilities are:
 
 - `free-registration`: at least one name can currently be registered for zero.

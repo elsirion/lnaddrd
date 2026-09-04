@@ -89,6 +89,40 @@ pub fn normalized_origin(value: &str) -> Result<String> {
     Ok(origin)
 }
 
+/// Whether `host` is a public registrable DNS name (see docs/protocol/02).
+pub fn is_public_host(host: &str) -> bool {
+    const RESERVED_TLDS: [&str; 6] = [
+        "localhost",
+        "local",
+        "internal",
+        "test",
+        "invalid",
+        "example",
+    ];
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 {
+        return false;
+    }
+    for label in &labels {
+        let bytes = label.as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > 63
+            || !bytes
+                .iter()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+            || bytes[0] == b'-'
+            || bytes[bytes.len() - 1] == b'-'
+        {
+            return false;
+        }
+    }
+    let tld = labels.last().expect("at least two labels");
+    if tld.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    !RESERVED_TLDS.contains(tld)
+}
+
 pub fn build_event(
     config: &Config,
     service_configuration: &ServiceConfigurationRecord,
@@ -99,6 +133,45 @@ pub fn build_event(
         return Ok(None);
     };
     let origin = normalized_origin(origin)?;
+    let origin_host = Url::parse(&origin)?
+        .host_str()
+        .context("Public base URL has no host")?
+        .to_owned();
+    if !is_public_host(&origin_host)
+        || service_configuration
+            .domains
+            .keys()
+            .any(|domain| !is_public_host(domain.as_str()))
+    {
+        warn!("Origin or domain is not public, skipping service announcement");
+        return Ok(None);
+    }
+    build_event_from_origin(config, service_configuration, keys, now, origin).map(Some)
+}
+
+/// Constructs an announcement event for an already-normalized origin, without
+/// the public-host gate in [`build_event`]. Only used by tests that need to
+/// exercise [`crate::nostr::discovery::validate_event`]'s own rejection of a
+/// non-public host, since a real publisher can no longer produce one.
+#[cfg(test)]
+pub(crate) fn build_event_unchecked(
+    config: &Config,
+    service_configuration: &ServiceConfigurationRecord,
+    keys: &ServiceKeys,
+    now: u64,
+    origin: &str,
+) -> Result<Event> {
+    let origin = normalized_origin(origin)?;
+    build_event_from_origin(config, service_configuration, keys, now, origin)
+}
+
+fn build_event_from_origin(
+    config: &Config,
+    service_configuration: &ServiceConfigurationRecord,
+    keys: &ServiceKeys,
+    now: u64,
+    origin: String,
+) -> Result<Event> {
     let mut domains = service_configuration
         .domains
         .keys()
@@ -180,15 +253,13 @@ pub fn build_event(
     for relay in &config.nostr_relays {
         tags.push(Tag::parse(["r", relay, "backup"])?);
     }
-    Ok(Some(
-        EventBuilder::new(
-            Kind::ApplicationSpecificData,
-            serde_json::to_string(&announcement)?,
-        )
-        .tags(tags)
-        .custom_created_at(Timestamp::from_secs(now))
-        .sign_with_keys(keys.signing_keys())?,
-    ))
+    Ok(EventBuilder::new(
+        Kind::ApplicationSpecificData,
+        serde_json::to_string(&announcement)?,
+    )
+    .tags(tags)
+    .custom_created_at(Timestamp::from_secs(now))
+    .sign_with_keys(keys.signing_keys())?)
 }
 
 pub fn well_known(config: &Config, keys: &ServiceKeys) -> Result<Option<WellKnownAnnouncement>> {
@@ -254,5 +325,119 @@ impl AnnouncementWorker {
             info!(event_id=%event.id, relay_count=publication.accepted_by.len(), "Service announcement published");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        crypto::RootSecret,
+        nostr::codec::{DomainConfigurationRecord, ServiceConfigurationRecord},
+    };
+    use std::{net::SocketAddr, path::PathBuf};
+
+    fn fixture(
+        public_base_url: &str,
+        domains: &[&str],
+    ) -> (Config, ServiceConfigurationRecord, ServiceKeys) {
+        let config = Config {
+            operation: None,
+            domains: domains.iter().map(|domain| domain.to_string()).collect(),
+            bind: "127.0.0.1:8080".parse::<SocketAddr>().unwrap(),
+            database_path: "unused".to_owned(),
+            root_secret_file: PathBuf::from("unused"),
+            admin_password_file: PathBuf::from("unused"),
+            nostr_relays: vec!["wss://relay.example".to_owned()],
+            public_base_url: Some(public_base_url.to_owned()),
+            service_name: "Example".to_owned(),
+            warning: None,
+        };
+        let configuration = ServiceConfigurationRecord {
+            schema: 1,
+            revision: 1,
+            instance_id: "01".repeat(32),
+            domains: domains
+                .iter()
+                .map(|domain| {
+                    (
+                        domain.parse().unwrap(),
+                        DomainConfigurationRecord::default(),
+                    )
+                })
+                .collect(),
+            profile: None,
+            updated_at: 1_700_000_000,
+        };
+        (
+            config,
+            configuration,
+            RootSecret::from_bytes([0x42; 32]).derive().unwrap(),
+        )
+    }
+
+    #[test]
+    fn is_public_host_accepts_valid_registrable_names() {
+        for host in [
+            "lnaddr.org",
+            "pay.lnaddr.org",
+            "foo-bar.io",
+            "a.b.co",
+            "xn--ls8h.net",
+            "svc.example2.com",
+        ] {
+            assert!(is_public_host(host), "rejected {host}");
+        }
+    }
+
+    #[test]
+    fn is_public_host_rejects_reserved_and_malformed_hosts() {
+        for host in [
+            "localhost",
+            "foo.localhost",
+            "mybox.local",
+            "svc.internal",
+            "demo.test",
+            "x.invalid",
+            "site.example",
+            "1.2.3.4",
+            "192.168.0.10",
+            "[::1]",
+            "::1",
+            "lnaddr.org.",
+            ".lnaddr.org",
+            "foo..bar",
+            "UPPER.org",
+            "single",
+            "-bad.org",
+            "bad-.org",
+            "foo.123",
+        ] {
+            assert!(!is_public_host(host), "accepted {host}");
+        }
+    }
+
+    #[test]
+    fn build_event_skips_publication_for_non_public_origin() {
+        let (config, configuration, keys) = fixture("https://localhost", &["example.com"]);
+        assert!(
+            build_event(&config, &configuration, &keys, 1_700_000_000)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn build_event_skips_publication_for_non_public_domain() {
+        let (config, mut configuration, keys) = fixture("https://example.com", &["example.com"]);
+        configuration.domains.insert(
+            "dev.local".parse().unwrap(),
+            DomainConfigurationRecord::default(),
+        );
+        assert!(
+            build_event(&config, &configuration, &keys, 1_700_000_000)
+                .unwrap()
+                .is_none()
+        );
     }
 }

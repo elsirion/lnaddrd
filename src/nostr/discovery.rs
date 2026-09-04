@@ -10,7 +10,8 @@ use serde::Serialize;
 use crate::{
     nostr::{
         announcement::{
-            ANNOUNCEMENT_PREFIX, ServiceAnnouncement, WellKnownAnnouncement, normalized_origin,
+            ANNOUNCEMENT_PREFIX, ServiceAnnouncement, WellKnownAnnouncement, is_public_host,
+            normalized_origin,
         },
         publisher::NostrPublisher,
     },
@@ -97,6 +98,11 @@ fn validate_event(event: &Event, now: u64) -> Result<()> {
         normalized_origin(origin)? == origin,
         "Non-canonical origin identifier"
     );
+    let origin_host = url::Url::parse(origin)?
+        .host_str()
+        .context("Origin has no host")?
+        .to_owned();
+    ensure!(is_public_host(&origin_host), "Host is not public");
     let announcement: ServiceAnnouncement = serde_json::from_str(&event.content)?;
     ensure!(announcement.schema == 1, "Unsupported announcement schema");
     ensure!(
@@ -129,6 +135,9 @@ fn validate_event(event: &Event, now: u64) -> Result<()> {
         sorted == announcement.domains,
         "Domains are not sorted and unique"
     );
+    for domain in &announcement.domains {
+        ensure!(is_public_host(domain.as_str()), "Host is not public");
+    }
     for tag in event.tags.iter() {
         let values = tag.as_slice();
         if values.first().map(String::as_str) == Some("expiration") {
@@ -155,7 +164,11 @@ fn verify_well_known(document: &WellKnownAnnouncement, event: &Event) -> bool {
 mod tests {
     use super::*;
     use crate::nostr::codec::{DomainConfigurationRecord, ServiceConfigurationRecord};
-    use crate::{config::Config, crypto::RootSecret, nostr::announcement::build_event};
+    use crate::{
+        config::Config,
+        crypto::RootSecret,
+        nostr::announcement::{build_event, build_event_unchecked},
+    };
     use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 
     fn fixture() -> (
@@ -231,5 +244,41 @@ mod tests {
         );
         assert!(announcement.capabilities.iter().any(|c| c == "nostr-auth"));
         assert!(validate_event(&event, 1_700_000_001).is_ok());
+    }
+
+    #[test]
+    fn validate_event_rejects_non_public_origin() {
+        let (config, configuration, keys) = fixture();
+        // `build_event` refuses to produce this event; construct it directly to
+        // exercise `validate_event`'s own defense against a malicious publisher.
+        let event = build_event_unchecked(
+            &config,
+            &configuration,
+            &keys,
+            1_700_000_000,
+            "https://localhost",
+        )
+        .unwrap();
+        let error = validate_event(&event, 1_700_000_001).unwrap_err();
+        assert_eq!(error.to_string(), "Host is not public");
+    }
+
+    #[test]
+    fn validate_event_rejects_non_public_domain() {
+        let (config, mut configuration, keys) = fixture();
+        configuration.domains = BTreeMap::from([(
+            "mybox.local".parse().unwrap(),
+            DomainConfigurationRecord::default(),
+        )]);
+        let event = build_event_unchecked(
+            &config,
+            &configuration,
+            &keys,
+            1_700_000_000,
+            "https://example.com",
+        )
+        .unwrap();
+        let error = validate_event(&event, 1_700_000_001).unwrap_err();
+        assert_eq!(error.to_string(), "Host is not public");
     }
 }
