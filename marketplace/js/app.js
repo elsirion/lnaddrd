@@ -2,7 +2,7 @@ import { ANNOUNCEMENT_KIND, ANNOUNCEMENT_TAG } from "./config.js";
 import { validateAnnouncement, upsertByCoordinate } from "./announcement.js";
 import { currentRelays, renderRelayEditor } from "./relays.js";
 import { operatorCard } from "./render.js";
-import { classifyOperator } from "./visibility.js";
+import { classifyOperator, reconcileDomainStatuses } from "./visibility.js";
 import { openRegisterModal } from "./modal.js";
 import { connect } from "./nostr-auth.js";
 import { renderManage } from "./manage.js";
@@ -256,19 +256,33 @@ function setRelayState(relay, state, reason) {
 }
 
 async function verifyDomains(validated, event) {
-  // Reset every domain to "checking" up front (a changed event id means the
-  // domain list itself may have changed, and a previously-verified domain
-  // must be re-proven rather than assumed still good) — this can transiently
-  // drop a shown card back to pending/hidden until a fresh check lands.
-  for (const domain of validated.announcement.domains) {
-    domainStatus.set(`${event.pubkey}:${domain}`, "checking");
+  const pubkey = event.pubkey;
+  const domains = validated.announcement.domains;
+  const keep = new Set(domains);
+
+  // Drop status entries for domains this pubkey no longer announces, then
+  // seed the surviving + new domain list via reconcileDomainStatuses:
+  // domains already known keep their last status (stale-but-correct) so an
+  // already-verified card doesn't flicker away on a routine republish that
+  // only bumps the event id; only genuinely new domains start "checking".
+  for (const key of domainStatus.keys()) {
+    if (key.startsWith(`${pubkey}:`) && !keep.has(key.slice(pubkey.length + 1))) {
+      domainStatus.delete(key);
+    }
+  }
+  const next = reconcileDomainStatuses(domains, domain => domainStatus.get(`${pubkey}:${domain}`));
+  for (const [domain, status] of next) {
+    domainStatus.set(`${pubkey}:${domain}`, status);
   }
   scheduleRenderOperators();
-  for (const domain of validated.announcement.domains) {
-    const state = await verifyDomain(domain, event.pubkey, validated.dtag);
-    domainStatus.set(`${event.pubkey}:${domain}`, state);
+
+  // Concurrent, not sequential: an operator with several domains shouldn't
+  // pay N x the 5s well-known timeout before its last domain even starts.
+  await Promise.all(domains.map(async domain => {
+    const state = await verifyDomain(domain, pubkey, validated.dtag);
+    domainStatus.set(`${pubkey}:${domain}`, state);
     scheduleRenderOperators();
-  }
+  }));
 }
 
 async function verifyDomain(domain, pubkey, dtag) {

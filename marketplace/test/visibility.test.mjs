@@ -1,9 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyOperator } from "../js/visibility.js";
+import { classifyOperator, reconcileDomainStatuses } from "../js/visibility.js";
 
 function statusMap(map) {
   return domain => map[domain] ?? "checking";
+}
+
+// Unlike statusMap(), returns undefined (not "checking") for domains with
+// no prior entry — matching how app.js looks up a *previous* per-pubkey
+// status before reconciling, where "no entry" genuinely means "never seen"
+// rather than "in flight".
+function previousStatus(map) {
+  return domain => map[domain];
 }
 
 test("visible when at least one domain verified", () => {
@@ -54,4 +62,46 @@ test("visible takes priority even if other domains are still checking", () => {
   );
   assert.equal(result.category, "visible");
   assert.deepEqual(result.verified, ["a.example.com"]);
+});
+
+// --- reconcileDomainStatuses: stale-but-correct carry-over on republish ---
+
+test("reconcile keeps a domain's last status untouched (stale-but-correct)", () => {
+  const next = reconcileDomainStatuses(
+    ["a.example.com"],
+    previousStatus({ "a.example.com": "verified" })
+  );
+  assert.deepEqual([...next], [["a.example.com", "verified"]]);
+});
+
+test("reconcile carries over a failed status too, not just verified", () => {
+  const next = reconcileDomainStatuses(
+    ["a.example.com"],
+    previousStatus({ "a.example.com": "mismatch" })
+  );
+  assert.equal(next.get("a.example.com"), "mismatch");
+});
+
+test("reconcile seeds a genuinely new domain at checking", () => {
+  const next = reconcileDomainStatuses(
+    ["a.example.com", "new.example.com"],
+    previousStatus({ "a.example.com": "verified" })
+  );
+  assert.equal(next.get("a.example.com"), "verified");
+  assert.equal(next.get("new.example.com"), "checking");
+});
+
+test("reconcile drops a domain no longer in the new announcement", () => {
+  // Caller passes only the *new* domain list, so a domain removed from the
+  // announcement is simply absent from the result even if it had a status.
+  const next = reconcileDomainStatuses(
+    ["a.example.com"],
+    previousStatus({ "a.example.com": "verified", "removed.example.com": "verified" })
+  );
+  assert.deepEqual([...next.keys()], ["a.example.com"]);
+});
+
+test("reconcile on an entirely unseen coordinate starts every domain at checking", () => {
+  const next = reconcileDomainStatuses(["a.example.com", "b.example.com"], previousStatus({}));
+  assert.deepEqual([...next.values()], ["checking", "checking"]);
 });
