@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateAnnouncement, priceSummary, upsertByCoordinate } from "../js/announcement.js";
+import { validateAnnouncement, priceSummary, upsertByCoordinate, isPublicHost } from "../js/announcement.js";
 
 const ORIGIN = "https://pay.example.com";
 function makeEvent(overrides = {}, content = {}) {
@@ -65,4 +65,39 @@ test("terms_url must use HTTPS", () => {
 test("expiration tag must be pure decimal integer", () => {
   // Malformed expiration tag with non-numeric suffix fails
   assert.equal(validateAnnouncement(makeEvent({ tags: [["d", `lnaddrd:service:v1:${ORIGIN}`], ["t", "lightning-address-service"], ["expiration", "2000xyz"]] }), 1500).ok, false);
+});
+
+// Shared vectors (verbatim from docs/superpowers/plans/2026-09-04-marketplace-hardening.md).
+const PUBLIC_HOST_ACCEPT = ["lnaddr.org", "pay.lnaddr.org", "foo-bar.io", "a.b.co", "xn--ls8h.net", "svc.example2.com"];
+const PUBLIC_HOST_REJECT = [
+  "localhost", "foo.localhost", "mybox.local", "svc.internal", "demo.test", "x.invalid",
+  "site.example", "1.2.3.4", "192.168.0.10", "[::1]", "::1", "lnaddr.org.", ".lnaddr.org",
+  "foo..bar", "UPPER.org", "single", "-bad.org", "bad-.org", "foo.123",
+];
+test("isPublicHost matches shared test vectors", () => {
+  for (const host of PUBLIC_HOST_ACCEPT) {
+    assert.equal(isPublicHost(host), true, `expected ${host} to be accepted`);
+  }
+  for (const host of PUBLIC_HOST_REJECT) {
+    assert.equal(isPublicHost(host), false, `expected ${host} to be rejected`);
+  }
+});
+test("non-public origin host fails validation", () => {
+  const origin = "https://localhost";
+  const event = makeEvent(
+    { tags: [["d", `lnaddrd:service:v1:${origin}`], ["t", "lightning-address-service"]] },
+    { origin, registration_url: `${origin}/` }
+  );
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "Host is not public");
+});
+test("non-public domain entry fails validation", () => {
+  const event = makeEvent({}, {
+    domains: ["mybox.local"],
+    pricing: [{ domain: "mybox.local", currency: "msat", tiers: [{ max_length: 64, price: 0 }] }],
+  });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "Host is not public");
 });

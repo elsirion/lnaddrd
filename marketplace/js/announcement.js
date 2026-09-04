@@ -1,5 +1,23 @@
 import { ANNOUNCEMENT_KIND, ANNOUNCEMENT_TAG, ANNOUNCEMENT_PREFIX } from "./config.js";
 
+const RESERVED_TLDS = new Set(["localhost", "local", "internal", "test", "invalid", "example"]);
+
+/**
+ * Whether `host` is a public registrable DNS name (see docs/protocol/02).
+ * Mirrors is_public_host in src/nostr/announcement.rs — keep the two in sync.
+ */
+export function isPublicHost(host) {
+  if (typeof host !== "string") return false;
+  const labels = host.split(".");
+  if (labels.length < 2) return false;
+  for (const label of labels) {
+    if (label.length > 63 || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(label)) return false;
+  }
+  const tld = labels[labels.length - 1];
+  if (/^[0-9]+$/.test(tld)) return false;
+  return !RESERVED_TLDS.has(tld);
+}
+
 /**
  * Validates an announcement event. Returns {ok: true, origin, dtag, announcement}
  * or {ok: false, error}.
@@ -34,6 +52,11 @@ export function validateAnnouncement(event, nowSecs) {
     }
   } catch {
     return { ok: false, error: "Non-canonical origin identifier" };
+  }
+
+  // Origin host must be a public registrable DNS name
+  if (!isPublicHost(new URL(origin).hostname)) {
+    return { ok: false, error: "Host is not public" };
   }
 
   // Check for t tag
@@ -84,6 +107,11 @@ export function validateAnnouncement(event, nowSecs) {
   }
   if (isDuplicate || sorted.some((d, i) => d !== announcement.domains[i])) {
     return { ok: false, error: "Domains are not sorted and unique" };
+  }
+
+  // Each domain must be a public registrable DNS name
+  if (announcement.domains.some(domain => !isPublicHost(domain))) {
+    return { ok: false, error: "Host is not public" };
   }
 
   // Validate registration_url
