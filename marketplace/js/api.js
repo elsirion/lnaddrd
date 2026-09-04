@@ -23,3 +23,30 @@ export const registerStart = (origin, body) =>
   apiFetch(`${origin}/api/v1/register/start`, { method: "POST", body: JSON.stringify(body) });
 
 export const registerStatus = (origin, id) => apiFetch(`${origin}/api/v1/register/${id}`);
+
+// GET /api/v1/addresses requires a NIP-98 header; there is no fallback (see
+// docs/protocol/03-registration-api.md).
+export const listAddresses = (origin, authHeader) =>
+  apiFetch(`${origin}/api/v1/addresses`, { headers: { authorization: authHeader } });
+
+// The two endpoints below are the legacy `/lnaddress` surface: unlike
+// `/api/v1`, their error responses are bare HTTP status codes with no JSON
+// body at all (not even `{"error": "..."}`), so apiFetch's generic
+// `HTTP <status>` fallback message is what callers see on failure — manage.js
+// maps those statuses to endpoint-specific human text. Both accept either a
+// NIP-98 `authHeader` (proof of ownership) or a body `authentication_token`;
+// callers pass exactly one.
+
+export const updateAddress = (origin, body, authHeader) =>
+  apiFetch(`${origin}/lnaddress/update`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+    headers: authHeader ? { authorization: authHeader } : {},
+  });
+
+export const removeAddress = (origin, body, authHeader) =>
+  apiFetch(`${origin}/lnaddress/remove`, {
+    method: "DELETE",
+    body: JSON.stringify(body),
+    headers: authHeader ? { authorization: authHeader } : {},
+  });

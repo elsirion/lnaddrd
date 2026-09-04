@@ -3,6 +3,8 @@ import { validateAnnouncement, upsertByCoordinate } from "./announcement.js";
 import { currentRelays, renderRelayEditor } from "./relays.js";
 import { operatorCard, applyBadgeState } from "./render.js";
 import { openRegisterModal } from "./modal.js";
+import { connect } from "./nostr-auth.js";
+import { renderManage } from "./manage.js";
 
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -18,6 +20,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       document.getElementById('operators').classList.remove('hidden');
     } else if (tab === 'manage') {
       document.getElementById('manage').classList.remove('hidden');
+      renderManage(document.getElementById('manage'), { operators, connectedPubkey });
     }
 
     // Update button styles
@@ -43,9 +46,38 @@ let pool = null;
 let activeRelays = [];
 let activeSubscriptions = [];
 let renderTimer = null;
-// Set by Task 17 once a Nostr signing extension is connected; passed through
-// to the registration modal as the claimed owner_pubkey.
+// Set once a Nostr signing extension is connected; passed through to the
+// registration modal as the claimed owner_pubkey, and used by the Manage
+// tab's NIP-98-authenticated address list.
 let connectedPubkey = null;
+
+// --- Nostr connect ---
+
+const connectBtn = document.getElementById("connect-nostr");
+// Inserted as a sibling of the button (rather than added to index.html)
+// since it's purely a JS-owned inline error slot; `basis-full` makes it
+// wrap onto its own line in the header's flex row instead of squeezing the
+// button.
+const connectError = document.createElement("p");
+connectError.id = "connect-error";
+connectError.className = "basis-full text-right text-xs text-red-700 hidden";
+connectError.setAttribute("role", "alert");
+connectBtn.after(connectError);
+
+connectBtn.addEventListener("click", async () => {
+  connectError.classList.add("hidden");
+  connectError.textContent = "";
+  try {
+    connectedPubkey = await connect();
+    connectBtn.textContent = `${NostrTools.nip19.npubEncode(connectedPubkey).slice(0, 12)}…`;
+    if (!document.getElementById("manage").classList.contains("hidden")) {
+      renderManage(document.getElementById("manage"), { operators, connectedPubkey });
+    }
+  } catch (err) {
+    connectError.textContent = err.message;
+    connectError.classList.remove("hidden");
+  }
+});
 
 const handlers = {
   getDomainStatus(pubkey, domain) {

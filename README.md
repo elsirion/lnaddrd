@@ -253,6 +253,38 @@ advertised via the `registration-api-v1` and `nostr-auth` announcement
 capabilities. NIP-98 handling differs per endpoint (optional, required, or
 unused) — see doc 03 for the exact rules.
 
+## Marketplace
+
+`marketplace/` is a static, single-page client that discovers operators over
+Nostr and lets a wallet or user register and manage a Lightning Address
+without visiting any one operator's site first. It has no build step and no
+backend of its own: it talks directly to relays (for discovery) and to
+whichever operator's [HTTP API](#http-api) the user picks (for registration
+and management).
+
+Host it on any static file server — GitHub Pages, a CDN, `python3 -m http.server`,
+or anything else that serves plain files over HTTPS. For local development:
+
+```sh
+just marketplace-serve   # http://localhost:8081
+```
+
+The discovery relay set is entirely client-side: append `?relays=` with a
+comma-separated list of `wss://` relay URLs to override the built-in
+defaults, e.g. `?relays=wss://relay.damus.io,wss://nos.lol`. There is no
+server-side configuration for the marketplace at all.
+
+The page is stateless by design: all of its state (selected relays, which
+tab is active) lives in the URL or in memory, and it persists nothing to
+`localStorage`, `sessionStorage`, or cookies. A NIP-07 browser extension
+supplies the user's Nostr key on demand (to connect an identity and to sign
+NIP-98 requests); the key material itself never leaves the extension, and a
+Lightning Address management token pasted into the token-fallback form lives
+only in that page load's memory. See the
+[service announcement](docs/protocol/02-service-announcements.md) and
+[registration API](docs/protocol/03-registration-api.md) microstandards for
+the discovery and API contracts the marketplace implements against.
+
 ## Legacy PostgreSQL import
 
 Build the one-time importer with `--features postgres-import`. Stop the old
