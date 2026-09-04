@@ -253,6 +253,11 @@ advertised via the `registration-api-v1` and `nostr-auth` announcement
 capabilities. NIP-98 handling differs per endpoint (optional, required, or
 unused) — see doc 03 for the exact rules.
 
+The NIP-98 replay guard and the per-IP rate limits are both in-memory and
+per-process: a multi-replica deployment behind a load balancer does not share
+either state across replicas, so a client can bypass a rate limit or replay
+an event by landing on a different replica.
+
 ## Marketplace
 
 `marketplace/` is a static, single-page client that discovers operators over

@@ -225,7 +225,8 @@ response a client observes; every response after that repeats
 A client must capture the token from that first response — there is no way
 to retrieve it again afterwards.
 
-Errors: `not_found` (404, only for an `:id` the service has never issued),
+Errors: `not_found` (404, for an `:id` the service has never issued *or* one
+whose attempt has aged past the 24-hour retention window and been pruned),
 `internal` (500, including a transient failure verifying payment on an
 attempt that does exist — this is deliberately distinguished from
 `not_found`). This endpoint is not rate-limited.
@@ -323,10 +324,13 @@ Response `200 OK`:
 }
 ```
 
-The list contains every address whose stored `owner_pubkey` equals the
-signer's pubkey; it is empty (not an error) if the signer owns nothing.
-Addresses registered without an `owner_pubkey`, or with a different one,
-never appear here regardless of who calls it.
+The list contains every **active** address whose stored `owner_pubkey`
+equals the signer's pubkey; it is empty (not an error) if the signer owns
+nothing. Addresses registered without an `owner_pubkey`, or with a different
+one, never appear here regardless of who calls it. An address that is not
+yet active — for example one still awaiting relay acknowledgement after a
+relay outage (see the project README) — is omitted until it is acknowledged,
+even if the caller is its owner.
 
 Errors: `unauthorized` (missing or invalid header), `internal`.
 
@@ -482,7 +486,7 @@ endpoints never return this JSON body — see [Management](#management).)
 | `owner_mismatch` | 400 | Both a NIP-98 header and a body `owner_pubkey` were present and disagreed. |
 | `unauthorized` | 401 | A NIP-98 header was required or supplied and failed verification (or `GET /api/v1/addresses` was called with no header at all). |
 | `rate_limited` | 429 | The calling IP exceeded the endpoint's per-minute request budget. |
-| `not_found` | 404 | `GET /api/v1/register/:id` was called with an `:id` the service never issued. Never returned for any other reason. |
+| `not_found` | 404 | `GET /api/v1/register/:id` was called with an `:id` the service never issued, or one it issued but has since pruned. Registration attempts are kept for only 24 hours, after which a genuinely issued `:id` also 404s. |
 | `internal` | 500 | An unexpected server-side failure, including a transient error verifying payment status on an attempt that does exist. |
 
 ## Security and privacy considerations
