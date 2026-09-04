@@ -101,7 +101,6 @@ function startDiscovery() {
   activeSubscriptions = [];
   pool = new NostrTools.SimplePool();
   renderRelayStatus();
-  const now = Math.floor(Date.now() / 1000);
   const filter = { kinds: [ANNOUNCEMENT_KIND], "#t": [ANNOUNCEMENT_TAG] };
   // Subscribe per relay (rather than one subscribeMany call across all
   // relays) so each relay's chip reflects only its own connection state.
@@ -113,6 +112,7 @@ function startDiscovery() {
     const sub = pool.subscribeMany([relay], [filter], {
       onevent(event) {
         if (!NostrTools.verifyEvent(event)) return;
+        const now = Math.floor(Date.now() / 1000);
         const validated = validateAnnouncement(event, now);
         const key = `${event.pubkey}:${validated.dtag ?? ""}`;
         const before = operators.get(key);

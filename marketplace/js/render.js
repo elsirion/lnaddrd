@@ -136,11 +136,6 @@ export function operatorCard(entry, handlers) {
       registerBtn.textContent = "Register";
       registerBtn.addEventListener("click", () => handlers.onRegister?.(entry, domain));
       right.append(registerBtn);
-
-      const note = document.createElement("p");
-      note.id = `register-note-${pubkey}-${domain}`;
-      note.className = "hidden basis-full text-xs text-gray-500";
-      right.append(note);
     } else {
       const link = httpsLink(
         announcement.registration_url,
@@ -154,6 +149,18 @@ export function operatorCard(entry, handlers) {
     domainList.append(row);
   }
   card.append(domainList);
+
+  if (Array.isArray(announcement.capabilities) && announcement.capabilities.length) {
+    const capabilitiesRow = document.createElement("div");
+    capabilitiesRow.className = "flex flex-wrap gap-1.5";
+    for (const capability of announcement.capabilities) {
+      const chip = document.createElement("span");
+      chip.className = "bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 rounded";
+      chip.textContent = capability;
+      capabilitiesRow.append(chip);
+    }
+    card.append(capabilitiesRow);
+  }
 
   const footer = document.createElement("div");
   footer.className = "flex flex-wrap items-center gap-3 border-t border-gray-100 pt-2 text-xs text-gray-400";

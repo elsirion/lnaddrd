@@ -319,9 +319,16 @@ function renderSuccess(body, { address, management_token, active }) {
 function renderInvoice(body, origin, { id, bolt11, amount_msat, expires_at }) {
   body.replaceChildren();
 
+  const amount = Number(amount_msat);
+  const expiry = Number(expires_at);
+  const hasAmount = Number.isFinite(amount);
+  const hasExpiry = Number.isFinite(expiry);
+
   const amountP = document.createElement("p");
   amountP.className = "text-base font-medium text-gray-900";
-  amountP.textContent = `Pay ${Math.ceil(amount_msat / 1000).toLocaleString("en-US")} sats`;
+  amountP.textContent = hasAmount
+    ? `Pay ${Math.ceil(amount / 1000).toLocaleString("en-US")} sats`
+    : "Pay this invoice";
   body.append(amountP);
 
   const countdownP = document.createElement("p");
@@ -336,11 +343,21 @@ function renderInvoice(body, origin, { id, bolt11, amount_msat, expires_at }) {
   // still safe because the QR is generated entirely client-side by the
   // qrcode-generator library from `bolt11`, which is our own operator's
   // fresh invoice string (just returned by our own registerStart call) —
-  // there is no attacker-controlled markup anywhere in this string.
-  const qr = qrcode(0, "L");
-  qr.addData(bolt11.toUpperCase());
-  qr.make();
-  qrContainer.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 4 });
+  // there is no attacker-controlled markup anywhere in this string. If QR
+  // generation itself throws (e.g. the invoice is too long for the library's
+  // fixed type-0 capacity), fall back to plain text rather than leaving a
+  // blank modal — the invoice is still fully usable via copy/paste below.
+  try {
+    const qr = qrcode(0, "L");
+    qr.addData(bolt11.toUpperCase());
+    qr.make();
+    qrContainer.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 4 });
+  } catch {
+    const fallback = document.createElement("p");
+    fallback.className = "text-sm text-gray-500";
+    fallback.textContent = "QR unavailable — copy the invoice below";
+    qrContainer.append(fallback);
+  }
   body.append(qrContainer);
 
   const invoiceLabel = document.createElement("p");
@@ -380,7 +397,7 @@ function renderInvoice(body, origin, { id, bolt11, amount_msat, expires_at }) {
   }
 
   function tickCountdown() {
-    const remaining = expires_at - Math.floor(Date.now() / 1000);
+    const remaining = expiry - Math.floor(Date.now() / 1000);
     if (remaining <= 0) {
       countdownP.textContent = "Expired";
       showExpired();
@@ -415,7 +432,11 @@ function renderInvoice(body, origin, { id, bolt11, amount_msat, expires_at }) {
     }
   }
 
-  tickCountdown();
-  timers.countdown = setInterval(tickCountdown, 1000);
+  if (hasExpiry) {
+    tickCountdown();
+    timers.countdown = setInterval(tickCountdown, 1000);
+  } else {
+    countdownP.textContent = "Expiry unknown";
+  }
   timers.poll = setInterval(poll, 3000);
 }

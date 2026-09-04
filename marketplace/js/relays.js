@@ -30,10 +30,13 @@ export function renderRelayEditor(container, onChange) {
   input.placeholder = "wss://…";
   input.className = "rounded-lg border border-gray-300 bg-gray-50 p-1.5 text-xs font-mono";
   input.onkeydown = (e) => {
-    if (e.key === "Enter" && input.value.startsWith("wss://")) {
-      setRelays([...currentRelays(), input.value.trim()]);
-      onChange();
-    }
+    if (e.key !== "Enter") return;
+    const value = input.value.trim();
+    if (!value.startsWith("wss://")) return;
+    const relays = currentRelays();
+    if (relays.includes(value)) return;
+    setRelays([...relays, value]);
+    onChange();
   };
   container.append(input);
 }
