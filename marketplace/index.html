@@ -28,8 +28,30 @@
       <button data-tab="browse" class="tab-btn border-b-2 border-blue-700 px-1 pb-2 text-blue-700">Browse</button>
       <button data-tab="manage" class="tab-btn hidden border-b-2 border-transparent px-1 pb-2 text-gray-500 hover:text-gray-700">Manage</button>
     </nav>
-    <div id="browse-panel" class="space-y-2">
-      <section id="operators" class="grid gap-4 sm:grid-cols-2"></section>
+    <div id="browse-panel" class="space-y-3">
+      <section class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start">
+        <div class="flex-1 min-w-[12rem]">
+          <label for="browse-search" class="block mb-1 text-xs font-medium text-gray-700">Search</label>
+          <input id="browse-search" type="text" placeholder="Domain or supplier name" autocomplete="off"
+            class="block w-full p-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 text-sm focus:ring-blue-500 focus:border-blue-500">
+        </div>
+        <div class="flex-1 min-w-[12rem]">
+          <label for="browse-name" class="block mb-1 text-xs font-medium text-gray-700">Check a name</label>
+          <input id="browse-name" type="text" placeholder="e.g. satoshi" autocomplete="off"
+            class="block w-full p-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 text-sm focus:ring-blue-500 focus:border-blue-500">
+          <p class="mt-1 text-xs text-gray-500">shows domains where this name is free to register; availability is checked when you register</p>
+        </div>
+        <div class="sm:w-56">
+          <label for="browse-sort" class="block mb-1 text-xs font-medium text-gray-700">Sort by</label>
+          <select id="browse-sort"
+            class="block w-full p-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 text-sm focus:ring-blue-500 focus:border-blue-500">
+            <option value="alpha">Alphabetical</option>
+            <option value="price">Price</option>
+            <option value="users">Registered users</option>
+          </select>
+        </div>
+      </section>
+      <section id="operators" class="flex flex-col gap-3"></section>
       <p id="operators-placeholder" class="text-sm text-gray-500"></p>
       <p id="operators-hidden-count" class="hidden text-xs text-gray-400"></p>
     </div>

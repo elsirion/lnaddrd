@@ -1,11 +1,18 @@
 import { ANNOUNCEMENT_KIND, ANNOUNCEMENT_TAG } from "./config.js";
 import { validateAnnouncement, upsertByCoordinate } from "./announcement.js";
 import { currentRelays, renderRelayEditor } from "./relays.js";
-import { operatorCard } from "./render.js";
+import { domainRow } from "./render.js";
+import { buildRows, filterRows, sortRows } from "./browse.js";
 import { classifyOperator, reconcileDomainStatuses } from "./visibility.js";
 import { openRegisterModal } from "./modal.js";
 import { connect } from "./nostr-auth.js";
 import { renderManage } from "./manage.js";
+
+// Fallback name length used for the "price" sort when the name-check input
+// is empty — per the plan, a representative-but-arbitrary length so
+// short-name-favoring tier structures don't just collapse to "cheapest
+// possible" when nobody has typed a name yet.
+const DEFAULT_SORT_LENGTH = 8;
 
 // The Manage tab button itself starts `hidden` in index.html (there is no
 // identity connected yet); doConnect() below reveals it. Its panel handles
@@ -112,7 +119,7 @@ const handlers = {
   // state and header UI) before opening the modal. A connect failure (no
   // extension, user rejection) is surfaced next to the clicked button
   // instead — the modal never opens without a signed-in identity.
-  async onRegister(entry, domain, { showError } = {}) {
+  async onRegister(row, { showError } = {}) {
     if (!connectedPubkey) {
       try {
         await doConnect();
@@ -121,9 +128,31 @@ const handlers = {
         return;
       }
     }
-    openRegisterModal({ origin: entry.validated.origin, domain, ownerPubkey: connectedPubkey });
+    openRegisterModal({ origin: row.origin, domain: row.domain, ownerPubkey: connectedPubkey });
   },
 };
+
+// --- Browse controls (search / name-check / sort) ---
+//
+// Purely in-memory: every input/change event just re-runs renderOperators(),
+// which re-derives rows from the already-discovered operator/verification
+// state via buildRows/filterRows/sortRows — no relay or network work happens
+// here.
+const searchInput = document.getElementById("browse-search");
+const nameInput = document.getElementById("browse-name");
+const sortSelect = document.getElementById("browse-sort");
+// Which rows currently show their supplier detail line, keyed
+// `${pubkey}:${domain}` (per-row, not per-operator — see render.js's
+// domainRow doc comment).
+const expandedRows = new Set();
+
+function rowKey(row) {
+  return `${row.pubkey}:${row.domain}`;
+}
+
+searchInput.addEventListener("input", () => renderOperators());
+nameInput.addEventListener("input", () => renderOperators());
+sortSelect.addEventListener("change", () => renderOperators());
 
 function startDiscovery() {
   const relays = currentRelays();
@@ -188,22 +217,48 @@ function scheduleRenderOperators() {
   }, 100);
 }
 
-function renderOperators() {
-  const container = document.getElementById("operators");
-  container.replaceChildren();
+/**
+ * Flattens the discovered-operator map into `buildRows`' input shape (one
+ * entry per visible operator, verified domains only), plus a side lookup of
+ * per-operator detail fields (about/contact/terms/announced-at) keyed by
+ * origin. `buildRows` (browse.js, Task 1) only knows about the fields its
+ * own interface lists — about/contact/terms_url aren't among them — so
+ * those are merged onto the resulting rows afterward rather than widening
+ * that pure module's interface for a UI-only concern.
+ */
+function buildOperatorRows() {
   const sorted = [...operators.values()].sort((a, b) => a.validated.origin.localeCompare(b.validated.origin));
 
-  let shown = 0;
+  const operatorsForRows = [];
+  const metaByOrigin = new Map();
   let hidden = 0;
   let pending = false;
 
   for (const entry of sorted) {
     const pubkey = entry.event.pubkey;
-    const domains = entry.validated.announcement.domains;
+    const { announcement, origin } = entry.validated;
+    const domains = announcement.domains;
     const { verified, category } = classifyOperator(domains, domain => getDomainStatus(pubkey, domain));
     if (category === "visible") {
-      container.append(operatorCard(entry, verified, handlers));
-      shown++;
+      operatorsForRows.push({
+        origin,
+        name: announcement.name || origin,
+        pubkey,
+        capabilities: announcement.capabilities,
+        verifiedDomains: verified,
+        pricing: announcement.pricing,
+        // Not yet populated (Task 3 wires a counts fetcher into these);
+        // buildRows carries undefined through unchanged, and render.js's
+        // usersBadgeText renders that as "…".
+        usersCount: entry.usersCount,
+        usersApprox: entry.usersApprox,
+      });
+      metaByOrigin.set(origin, {
+        about: announcement.about,
+        contact: announcement.contact,
+        termsUrl: announcement.terms_url,
+        announcedAt: entry.event.created_at,
+      });
     } else if (category === "hidden") {
       hidden++;
     } else {
@@ -211,7 +266,44 @@ function renderOperators() {
     }
   }
 
-  renderDiscoveryStatus(shown, hidden, pending);
+  const rows = buildRows(operatorsForRows);
+  for (const row of rows) {
+    const meta = metaByOrigin.get(row.origin);
+    if (meta) Object.assign(row, meta);
+  }
+
+  return { rows, hidden, pending };
+}
+
+function renderOperators() {
+  const container = document.getElementById("operators");
+  const { rows, hidden, pending } = buildOperatorRows();
+
+  const query = searchInput.value.trim();
+  const name = nameInput.value.trim();
+  const filtered = filterRows(rows, { query, name });
+  const sorted = sortRows(filtered, { by: sortSelect.value, length: name ? name.length : DEFAULT_SORT_LENGTH });
+
+  container.replaceChildren();
+  for (const row of sorted) {
+    const key = rowKey(row);
+    container.append(
+      domainRow(row, handlers, {
+        expanded: expandedRows.has(key),
+        onToggleDetail() {
+          if (expandedRows.has(key)) {
+            expandedRows.delete(key);
+          } else {
+            expandedRows.add(key);
+          }
+          renderOperators();
+        },
+        nameQuery: name,
+      })
+    );
+  }
+
+  renderDiscoveryStatus(rows.length, sorted.length, hidden, pending);
 }
 
 function relaysSettled() {
@@ -219,20 +311,33 @@ function relaysSettled() {
 }
 
 /**
- * Updates the "Discovering operators…" / "No operators found" placeholder
- * and the muted "N operator(s) hidden (unverified)" line beneath the card
- * grid. The placeholder disappears for good once at least one card is
- * shown; before that, it reads "No operators found" only once every relay
- * has settled (eose/closed) and no operator's domain checks are still in
- * flight — otherwise it keeps reading "Discovering operators…".
+ * Updates the "Discovering operators…" / "No operators found" / "No domains
+ * match" placeholder and the muted "N operator(s) hidden (unverified)" line
+ * beneath the row list.
+ *
+ * `totalRows` is the row count *before* search/name filtering — the
+ * discovery-level states below only care whether any verified domain exists
+ * at all, never whether the current filters happen to hide it. `shownRows`
+ * is the count *after* filtering: when discovery has produced at least one
+ * row but the filters emptied the list, that's "No domains match" rather
+ * than any of the discovery states.
+ *
+ * Discovery states: the placeholder reads "No operators found" only once
+ * every relay has settled (eose/closed) and no operator's domain checks are
+ * still in flight — otherwise it keeps reading "Discovering operators…".
  */
-function renderDiscoveryStatus(shown, hidden, pending) {
+function renderDiscoveryStatus(totalRows, shownRows, hidden, pending) {
   const placeholder = document.getElementById("operators-placeholder");
   const hiddenCount = document.getElementById("operators-hidden-count");
   const settled = !pending && relaysSettled();
 
-  if (shown > 0) {
-    placeholder.classList.add("hidden");
+  if (totalRows > 0) {
+    if (shownRows === 0) {
+      placeholder.textContent = "No domains match";
+      placeholder.classList.remove("hidden");
+    } else {
+      placeholder.classList.add("hidden");
+    }
   } else if (!settled) {
     placeholder.textContent = "Discovering operators…";
     placeholder.classList.remove("hidden");
