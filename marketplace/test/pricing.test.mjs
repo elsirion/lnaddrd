@@ -109,3 +109,17 @@ test("tierSummary: single 64 catch-all tier renders fully open-ended", () => {
   const tiers = [{ max_length: 64, price: 21000 }];
   assert.equal(tierSummary(tiers), "1+: 21 sats");
 });
+
+test("tierSummary: duplicate max_length (malformed, untrusted announcement) never renders an inverted range", () => {
+  const tiers = [
+    { max_length: 4, price: 100 },
+    { max_length: 4, price: 50 },
+  ];
+  const summary = tierSummary(tiers);
+  // No segment's start should exceed its end (i.e. no "5–4"-style range).
+  for (const match of summary.matchAll(/(\d+)–(\d+)/g)) {
+    const [, start, end] = match;
+    assert.ok(Number(start) <= Number(end), `inverted segment found: ${match[0]}`);
+  }
+  assert.equal(summary, "1–4: 0.1 sats · 5+: free");
+});

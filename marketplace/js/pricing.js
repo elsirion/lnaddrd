@@ -45,6 +45,15 @@ export function formatSats(msat) {
  * stop short of the 64-character maximum (so priceForLength falls through to
  * 0 for any longer name), or the last tier's own max_length is 64 (the
  * hard maximum, so there is nothing above it to bound the range).
+ *
+ * Announcements are untrusted relay data: the server rejects duplicate or
+ * non-increasing `max_length` values for stored policies (validate_tiers),
+ * but nothing stops a relay event from carrying them. A duplicate/
+ * non-increasing `max_length` would make a naive "previous max + 1" start
+ * exceed that tier's own `max_length`, producing a backwards "b–a" segment.
+ * Since such a tier's range is already fully covered by an earlier one —
+ * and priceForLength's first-match rule would never select it either — it
+ * is skipped entirely rather than rendered.
  */
 export function tierSummary(tiers) {
   if (!Array.isArray(tiers) || tiers.length === 0) return "free";
@@ -52,21 +61,29 @@ export function tierSummary(tiers) {
 
   const segments = [];
   let prevMax = 0;
-  for (let i = 0; i < sorted.length; i++) {
-    const tier = sorted[i];
+  for (const tier of sorted) {
     const start = prevMax + 1;
-    const isLast = i === sorted.length - 1;
-    if (isLast && tier.max_length >= 64) {
-      segments.push(`${start}+: ${formatSats(tier.price)}`);
-    } else {
-      segments.push(`${start}–${tier.max_length}: ${formatSats(tier.price)}`);
+    if (start > tier.max_length) {
+      continue;
     }
+    segments.push({ start, end: tier.max_length, price: tier.price });
     prevMax = tier.max_length;
   }
 
-  if (prevMax < 64) {
-    segments.push(`${prevMax + 1}+: free`);
+  if (segments.length === 0) return "free";
+
+  const parts = segments.map((segment, i) => {
+    const isLastRendered = i === segments.length - 1;
+    if (isLastRendered && segment.end >= 64) {
+      return `${segment.start}+: ${formatSats(segment.price)}`;
+    }
+    return `${segment.start}–${segment.end}: ${formatSats(segment.price)}`;
+  });
+
+  const last = segments[segments.length - 1];
+  if (last.end < 64) {
+    parts.push(`${last.end + 1}+: free`);
   }
 
-  return segments.join(" · ");
+  return parts.join(" · ");
 }
