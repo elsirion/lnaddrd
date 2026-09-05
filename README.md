@@ -301,6 +301,16 @@ NIP-98 requests); the key material itself never leaves the extension. See the
 [registration API](docs/protocol/03-registration-api.md) microstandards for
 the discovery and API contracts the marketplace implements against.
 
+Each domain row's "users" figure is a per-operator count of that operator's
+encrypted [backup records](docs/protocol/01-private-backup-records.md) on the
+discovery relays — one record per registered address, regardless of which of
+the operator's domains it belongs to. It's a public-Nostr-data proxy for
+"how many addresses has this operator registered," not a live database
+query: it may include addresses that were later deleted (a backup record
+isn't necessarily removed on deletion) and, if the source relays hold more
+matching records than a single query returns, the app shows "N+" rather
+than an exact figure.
+
 ## Legacy PostgreSQL import
 
 Build the one-time importer with `--features postgres-import`. Stop the old

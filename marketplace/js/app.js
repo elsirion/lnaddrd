@@ -3,6 +3,7 @@ import { validateAnnouncement, upsertByCoordinate } from "./announcement.js";
 import { currentRelays, renderRelayEditor } from "./relays.js";
 import { domainRow } from "./render.js";
 import { buildRows, filterRows, sortRows } from "./browse.js";
+import { fetchBackupCounts } from "./counts.js";
 import { classifyOperator, reconcileDomainStatuses } from "./visibility.js";
 import { openRegisterModal } from "./modal.js";
 import { connect } from "./nostr-auth.js";
@@ -67,6 +68,17 @@ let pool = null;
 let activeRelays = [];
 let activeSubscriptions = [];
 let renderTimer = null;
+// Registered-users counts (Task 3): pubkeys already fetched-or-fetching, so
+// a republished announcement or a duplicate delivery from another relay
+// never triggers a second backup-record query for the same operator.
+const countedPubkeys = new Set();
+// Newly discovered pubkeys awaiting the next debounced fetchBackupCounts
+// call — batched the same way scheduleRenderOperators batches re-renders,
+// so several operators announcing in quick succession share one query
+// instead of one relay round-trip each.
+let pendingCountPubkeys = new Set();
+let countFetchTimer = null;
+let activeCountFetches = [];
 // Set once a Nostr signing extension is connected; passed through to the
 // registration modal as the claimed owner_pubkey, and used by the Manage
 // tab's NIP-98-authenticated address list.
@@ -160,12 +172,20 @@ function startDiscovery() {
   // connections themselves (subscription close() only sends CLOSE for the
   // REQ; the WebSocket connections are cached on the pool by URL).
   activeSubscriptions.forEach(sub => sub.close());
+  activeCountFetches.forEach(countFetch => countFetch.close());
   if (pool) pool.close(activeRelays);
   operators.clear();
   domainStatus.clear();
   settledRelays.clear();
+  countedPubkeys.clear();
+  pendingCountPubkeys = new Set();
+  if (countFetchTimer) {
+    clearTimeout(countFetchTimer);
+    countFetchTimer = null;
+  }
   activeRelays = relays;
   activeSubscriptions = [];
+  activeCountFetches = [];
   pool = new NostrTools.SimplePool();
   renderRelayStatus();
   const filter = { kinds: [ANNOUNCEMENT_KIND], "#t": [ANNOUNCEMENT_TAG] };
@@ -186,6 +206,14 @@ function startDiscovery() {
         upsertByCoordinate(operators, validated, event);
         const after = operators.get(key);
         scheduleRenderOperators();
+        // Registered-users count: fetched once per newly discovered operator
+        // pubkey (never per keystroke, never re-fetched for a duplicate or
+        // republished announcement from a pubkey already counted-or-queued).
+        if (!countedPubkeys.has(event.pubkey)) {
+          countedPubkeys.add(event.pubkey);
+          pendingCountPubkeys.add(event.pubkey);
+          scheduleCountFetch();
+        }
         // Re-verify domains for brand-new coordinates, and for republished
         // announcements whose stored event actually changed (so updated
         // domain lists get checked too), but not for duplicate deliveries
@@ -215,6 +243,40 @@ function scheduleRenderOperators() {
     renderTimer = null;
     renderOperators();
   }, 100);
+}
+
+// Debounced the same way scheduleRenderOperators is: several operators
+// announcing within the same 100ms window share one fetchBackupCounts call
+// (one query per relay for the whole batch) instead of one per pubkey.
+function scheduleCountFetch() {
+  if (countFetchTimer) return;
+  countFetchTimer = setTimeout(() => {
+    countFetchTimer = null;
+    const batch = [...pendingCountPubkeys];
+    pendingCountPubkeys = new Set();
+    if (batch.length === 0) return;
+    activeCountFetches.push(fetchBackupCounts(pool, activeRelays, batch, applyCounts));
+  }, 100);
+}
+
+/**
+ * fetchBackupCounts' onUpdate callback: writes usersCount/usersApprox onto
+ * every `operators` Map entry authored by `pubkey` (there can be more than
+ * one — the map is keyed `${pubkey}:${dtag}`, so a single service pubkey
+ * publishing under more than one d-tag/origin has one entry per coordinate)
+ * and triggers the existing debounced re-render so buildOperatorRows picks
+ * up the new counts on its next pass.
+ */
+function applyCounts(pubkey, usersCount, usersApprox) {
+  let changed = false;
+  for (const entry of operators.values()) {
+    if (entry.event.pubkey === pubkey) {
+      entry.usersCount = usersCount;
+      entry.usersApprox = usersApprox;
+      changed = true;
+    }
+  }
+  if (changed) scheduleRenderOperators();
 }
 
 /**
@@ -247,9 +309,11 @@ function buildOperatorRows() {
         capabilities: announcement.capabilities,
         verifiedDomains: verified,
         pricing: announcement.pricing,
-        // Not yet populated (Task 3 wires a counts fetcher into these);
-        // buildRows carries undefined through unchanged, and render.js's
-        // usersBadgeText renders that as "…".
+        // Populated asynchronously by applyCounts() (see the discovery
+        // onevent handler / scheduleCountFetch above) once counts.js's
+        // fetchBackupCounts resolves for this pubkey; undefined until then,
+        // which buildRows carries through unchanged and render.js's
+        // usersBadgeText renders as "…".
         usersCount: entry.usersCount,
         usersApprox: entry.usersApprox,
       });

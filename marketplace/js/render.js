@@ -86,9 +86,10 @@ function detailLine({ about, contact, termsUrl, announcedAt }) {
   return detail;
 }
 
-/** Formats the registered-users badge text: "…" until Task 3 supplies a
- * count, otherwise "N users" or "N+ users" when the count is approximate
- * (a relay query hit its cap — see counts.js, added in Task 3). */
+/** Formats the registered-users badge text: "…" while the count is still
+ * loading (usersCount not yet set for this operator), otherwise "N users" or
+ * "N+ users" when the count is approximate (a relay query hit its cap — see
+ * counts.js). */
 function usersBadgeText(usersCount, usersApprox) {
   if (usersCount === undefined || usersCount === null) return "…";
   return `${usersCount}${usersApprox ? "+" : ""} user${usersCount === 1 && !usersApprox ? "" : "s"}`;
