@@ -36,7 +36,7 @@ function sanitizeUserCounts(announcement) {
     if (!entry || typeof entry !== "object") continue;
     const { domain, count } = entry;
     if (typeof domain !== "string" || !domainSet.has(domain)) continue;
-    if (typeof count !== "number" || !Number.isInteger(count) || count < 0) continue;
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || count > Number.MAX_SAFE_INTEGER) continue;
     result[domain] = count;
   }
   return result;

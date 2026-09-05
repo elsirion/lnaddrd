@@ -137,6 +137,13 @@ test("users entry with a fractional count is dropped", () => {
   assert.deepEqual(result.userCounts, {});
 });
 
+test("users entry with a count beyond MAX_SAFE_INTEGER is dropped", () => {
+  const event = makeEvent({}, { users: [{ domain: "pay.example.com", count: 1e308 }] });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.userCounts, {});
+});
+
 test("users entry with a string count is dropped", () => {
   const event = makeEvent({}, { users: [{ domain: "pay.example.com", count: "42" }] });
   const result = validateAnnouncement(event, 1500);
