@@ -93,18 +93,34 @@ export function fetchBackupCounts(pool, relays, pubkeys, onUpdate) {
   for (const relay of relays) {
     let rawCount = 0;
     let settled = false;
+    // Declared before `sub` is assigned since `finish` (passed into
+    // subscribeMany below) can fire synchronously from within that same
+    // call; `sub` is only read once finish actually runs, by which point the
+    // assignment below has completed.
+    let sub;
     const finish = () => {
       if (settled) return;
       settled = true;
-      if (rawCount === COUNT_QUERY_LIMIT) {
+      // >= rather than === defends against a relay that ignores `limit` and
+      // returns more events than requested; both cases mean the response
+      // can't be trusted as exhaustive.
+      if (rawCount >= COUNT_QUERY_LIMIT) {
         for (const pubkey of batch) aggregator.markApprox(pubkey);
       }
       for (const pubkey of batch) {
         const { count, approx } = aggregator.snapshot(pubkey);
         onUpdate(pubkey, count, approx);
       }
+      // This relay's query is done (eose or close) and has delivered its
+      // final onUpdate for this batch — close its REQ now rather than
+      // leaving it open for the rest of the session. Without this, every
+      // newly discovered operator batch would leak one open subscription
+      // per relay, eventually hitting relays' per-connection subscription
+      // caps. (Bulk close() below still covers cancelling a batch mid-flight,
+      // e.g. when discovery restarts against a different relay set.)
+      sub?.close();
     };
-    const sub = pool.subscribeMany([relay], [filter], {
+    sub = pool.subscribeMany([relay], [filter], {
       onevent(event) {
         rawCount++;
         if (NostrTools.verifyEvent(event)) aggregator.addEvent(event);

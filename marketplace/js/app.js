@@ -209,7 +209,10 @@ function startDiscovery() {
         // Registered-users count: fetched once per newly discovered operator
         // pubkey (never per keystroke, never re-fetched for a duplicate or
         // republished announcement from a pubkey already counted-or-queued).
-        if (!countedPubkeys.has(event.pubkey)) {
+        // Gated on validated.ok so a malformed announcement never burns the
+        // pubkey's one shot at being counted — an operator that republishes
+        // a corrected, valid announcement later still gets its count fetched.
+        if (validated.ok && !countedPubkeys.has(event.pubkey)) {
           countedPubkeys.add(event.pubkey);
           pendingCountPubkeys.add(event.pubkey);
           scheduleCountFetch();
