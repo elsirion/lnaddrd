@@ -166,35 +166,6 @@ export function validateAnnouncement(event, nowSecs) {
 }
 
 /**
- * Returns a price summary string for a domain.
- * "free" if min tier price is 0, "from X sat(s)" if > 0, null if no entry.
- */
-export function priceSummary(announcement, domain) {
-  if (!announcement.pricing || !Array.isArray(announcement.pricing)) {
-    return null;
-  }
-
-  const pricingEntry = announcement.pricing.find(p => p.domain === domain);
-  if (!pricingEntry) {
-    return null;
-  }
-
-  if (!pricingEntry.tiers || !Array.isArray(pricingEntry.tiers) || pricingEntry.tiers.length === 0) {
-    return null;
-  }
-
-  const minPrice = Math.min(...pricingEntry.tiers.map(t => t.price));
-
-  if (minPrice === 0) {
-    return "free";
-  }
-
-  const satoshis = Math.ceil(minPrice / 1000);
-  const formatted = satoshis.toLocaleString("en-US");
-  return satoshis === 1 ? `from ${formatted} sat` : `from ${formatted} sats`;
-}
-
-/**
  * Deduplicates announcements by pubkey + dtag coordinate.
  * Keeps newest based on (created_at, id) tuple (lexicographic comparison).
  * No-op if validated.ok is false.

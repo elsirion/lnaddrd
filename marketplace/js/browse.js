@@ -49,7 +49,9 @@ export function buildRows(operators) {
  * `query` (case-insensitive substring on `domain` or `operatorName`) and
  * `name` (non-empty: keep only rows where `priceForLength(tiers,
  * name.length) === 0`, i.e. that name would register free) combine with AND
- * semantics. Either filter is skipped when its value is absent/empty.
+ * semantics. Either filter is skipped when its value is absent/empty. The
+ * strict `=== 0` check means `null` (that name's length is unavailable —
+ * see pricing.js's priceForLength) never passes the filter either.
  */
 export function filterRows(rows, { query, name } = {}) {
   let result = rows;
@@ -79,7 +81,9 @@ function compareDomain(a, b) {
  *
  * `by`:
  *  - "alpha": domain ascending.
- *  - "price": `priceForLength(tiers, length)` ascending (cheapest first).
+ *  - "price": `priceForLength(tiers, length)` ascending (cheapest first);
+ *    `null` (that length is unavailable — see pricing.js) sorts as if it
+ *    were `Infinity`, i.e. last.
  *  - "users": `usersCount` descending; rows with no count sort last.
  * Every order ties-breaks by domain A→Z.
  */
@@ -89,7 +93,23 @@ export function sortRows(rows, { by, length } = {}) {
   copy.sort((a, b) => {
     let primary = 0;
     if (by === "price") {
-      primary = priceForLength(a.tiers, length ?? 0) - priceForLength(b.tiers, length ?? 0);
+      // null (unavailable — see pricing.js's priceForLength) sorts as
+      // Infinity, i.e. last; computed via explicit branches rather than
+      // `?? Infinity` subtraction so two unavailable rows (Infinity -
+      // Infinity = NaN) don't produce a broken comparator result.
+      const aPrice = priceForLength(a.tiers, length ?? 0);
+      const bPrice = priceForLength(b.tiers, length ?? 0);
+      const aUnavailable = aPrice === null;
+      const bUnavailable = bPrice === null;
+      if (aUnavailable && bUnavailable) {
+        primary = 0;
+      } else if (aUnavailable) {
+        primary = 1;
+      } else if (bUnavailable) {
+        primary = -1;
+      } else {
+        primary = aPrice - bPrice;
+      }
     } else if (by === "users") {
       const aMissing = a.usersCount === undefined || a.usersCount === null;
       const bMissing = b.usersCount === undefined || b.usersCount === null;

@@ -285,11 +285,14 @@ function applyCounts(pubkey, usersCount, usersApprox) {
 /**
  * Flattens the discovered-operator map into `buildRows`' input shape (one
  * entry per visible operator, verified domains only), plus a side lookup of
- * per-operator detail fields (about/contact/terms/announced-at) keyed by
- * origin. `buildRows` (browse.js, Task 1) only knows about the fields its
- * own interface lists — about/contact/terms_url aren't among them — so
- * those are merged onto the resulting rows afterward rather than widening
- * that pure module's interface for a UI-only concern.
+ * per-operator detail fields (about/contact/terms/announced-at) keyed
+ * `${pubkey}:${origin}` (not origin alone — two distinct operator pubkeys
+ * can announce the same origin, and keying by origin alone would let one
+ * clobber the other's detail fields). `buildRows` (browse.js, Task 1) only
+ * knows about the fields its own interface lists — about/contact/terms_url
+ * aren't among them — so those are merged onto the resulting rows
+ * afterward rather than widening that pure module's interface for a
+ * UI-only concern.
  */
 function buildOperatorRows() {
   const sorted = [...operators.values()].sort((a, b) => a.validated.origin.localeCompare(b.validated.origin));
@@ -320,7 +323,7 @@ function buildOperatorRows() {
         usersCount: entry.usersCount,
         usersApprox: entry.usersApprox,
       });
-      metaByOrigin.set(origin, {
+      metaByOrigin.set(`${pubkey}:${origin}`, {
         about: announcement.about,
         contact: announcement.contact,
         termsUrl: announcement.terms_url,
@@ -335,7 +338,7 @@ function buildOperatorRows() {
 
   const rows = buildRows(operatorsForRows);
   for (const row of rows) {
-    const meta = metaByOrigin.get(row.origin);
+    const meta = metaByOrigin.get(`${row.pubkey}:${row.origin}`);
     if (meta) Object.assign(row, meta);
   }
 

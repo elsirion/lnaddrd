@@ -5,20 +5,29 @@
 /**
  * The price (in msat) an operator would charge for a username of `length`
  * characters, given its announced `tiers` (`[{max_length, price}]`, msat —
- * see docs/protocol/02-service-announcements.md).
+ * see docs/protocol/02-service-announcements.md). Returns `null` when that
+ * length is unavailable (registration would be rejected), rather than a
+ * price.
  *
- * Mirrors the server-side rule in src/payment.rs (`policy_price`, applied to
- * tiers already validated ascending by `validate_tiers`): sort tiers
- * ascending by `max_length`, then the price is that of the FIRST tier whose
- * `max_length >= length`; if none matches, the price is 0. Announced tiers
- * are an untrusted, arbitrary-order claim from the operator, so — unlike the
- * server's already-validated tiers — this does not assume sorted input.
+ * Mirrors the server-side rule: absent/empty payment policy means free
+ * registration at every length (src/registration.rs's `quote_checked` short-
+ * circuits to `Ok(Ok(0))` before ever calling `policy_price`), but once a
+ * policy has tiers, `policy_price` (src/payment.rs, applied to tiers already
+ * validated ascending by `validate_tiers`) returns the price of the FIRST
+ * tier (sorted ascending by `max_length`) whose `max_length >= length`, or
+ * `None` if no tier matches — which `quote_checked` turns into a
+ * `LengthDisabled` rejection, not a free registration. So here: empty/absent
+ * `tiers` returns 0 (free), a non-empty `tiers` with no matching tier returns
+ * `null` (unavailable), and otherwise the matching tier's price. Announced
+ * tiers are an untrusted, arbitrary-order claim from the operator, so —
+ * unlike the server's already-validated tiers — this does not assume sorted
+ * input.
  */
 export function priceForLength(tiers, length) {
   if (!Array.isArray(tiers) || tiers.length === 0) return 0;
   const sorted = [...tiers].sort((a, b) => a.max_length - b.max_length);
   const tier = sorted.find(t => t.max_length >= length);
-  return tier ? tier.price : 0;
+  return tier ? tier.price : null;
 }
 
 /**
@@ -40,11 +49,12 @@ export function formatSats(msat) {
  * Tiers are sorted ascending by `max_length` first (see priceForLength).
  * Consecutive tiers become "a–b: X sats" segments covering the length range
  * they own (from one past the previous tier's max_length up to their own).
- * The final segment is rendered open-ended ("n+: X sats"/"n+: free") in two
- * cases that both mean "everything from n up has this price": the tiers
- * stop short of the 64-character maximum (so priceForLength falls through to
- * 0 for any longer name), or the last tier's own max_length is 64 (the
- * hard maximum, so there is nothing above it to bound the range).
+ * The final segment is rendered open-ended in two cases: when the last
+ * tier's own max_length is 64 (the hard maximum, so its "n+: X sats"/"n+:
+ * free" segment already covers everything above n, since there is nothing
+ * left to bound the range), and when the tiers stop short of 64 — in which
+ * case an extra "n+: unavailable" segment is appended, since priceForLength
+ * returns null (not a price) for any length beyond every tier's max_length.
  *
  * Announcements are untrusted relay data: the server rejects duplicate or
  * non-increasing `max_length` values for stored policies (validate_tiers),
@@ -82,7 +92,7 @@ export function tierSummary(tiers) {
 
   const last = segments[segments.length - 1];
   if (last.end < 64) {
-    parts.push(`${last.end + 1}+: free`);
+    parts.push(`${last.end + 1}+: unavailable`);
   }
 
   return parts.join(" · ");

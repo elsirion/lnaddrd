@@ -148,9 +148,17 @@ export function domainRow(row, handlers, { expanded, onToggleDetail, nameQuery }
   left.append(priceChip);
 
   if (nameQuery) {
+    const namePrice = priceForLength(tiers, nameQuery.length);
+    // priceForLength returns null when this name's length is unavailable
+    // (no tier matches — registration would be rejected server-side, see
+    // pricing.js). The row-level name filter in browse.js already drops
+    // such rows while a name-check search is active, but this chip can
+    // still be built from other render paths, so it renders correctly
+    // regardless of whether that filter ran.
+    const namePriceText = namePrice === null ? "unavailable" : formatSats(namePrice);
     const namePriceChip = document.createElement("span");
     namePriceChip.className = "rounded bg-blue-50 text-blue-700 text-xs font-medium px-2 py-0.5";
-    namePriceChip.textContent = `${nameQuery}@${domain}: ${formatSats(priceForLength(tiers, nameQuery.length))}`;
+    namePriceChip.textContent = `${nameQuery}@${domain}: ${namePriceText}`;
     left.append(namePriceChip);
   }
 
@@ -160,6 +168,7 @@ export function domainRow(row, handlers, { expanded, onToggleDetail, nameQuery }
   const usersBadge = document.createElement("span");
   usersBadge.className = "text-xs text-gray-500";
   usersBadge.textContent = usersBadgeText(usersCount, usersApprox);
+  usersBadge.title = "Supplier-wide count of backup records across all its domains";
   right.append(usersBadge);
 
   // Operators without both capabilities get an info-only row: no button,

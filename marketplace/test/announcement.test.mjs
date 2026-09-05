@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateAnnouncement, priceSummary, upsertByCoordinate, isPublicHost } from "../js/announcement.js";
+import { validateAnnouncement, upsertByCoordinate, isPublicHost } from "../js/announcement.js";
 
 const ORIGIN = "https://pay.example.com";
 function makeEvent(overrides = {}, content = {}) {
@@ -37,13 +37,6 @@ test("unsorted domains fail", () => {
 });
 test("registration url on other origin fails", () => {
   assert.equal(validateAnnouncement(makeEvent({}, { registration_url: "https://other.example/" }), 1500).ok, false);
-});
-test("price summary", () => {
-  const { announcement } = validateAnnouncement(makeEvent(), 1500);
-  assert.equal(priceSummary(announcement, "pay.example.com"), "free");
-  const paid = validateAnnouncement(makeEvent({}, { pricing: [{ domain: "pay.example.com", currency: "msat", tiers: [{ max_length: 64, price: 2000 }] }] }), 1500);
-  assert.equal(priceSummary(paid.announcement, "pay.example.com"), "from 2 sats");
-  assert.equal(priceSummary(announcement, "unknown.example"), null);
 });
 test("upsert keeps newest per coordinate", () => {
   const map = new Map();

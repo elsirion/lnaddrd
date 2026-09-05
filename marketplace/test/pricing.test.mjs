@@ -37,11 +37,11 @@ test("priceForLength: does not assume sorted input", () => {
   assert.equal(priceForLength(tiers, 1), 1000000);
 });
 
-test("priceForLength: length beyond every tier's max_length is 0 (no catch-all)", () => {
+test("priceForLength: length beyond every tier's max_length is null (unavailable, no catch-all)", () => {
   const tiers = [{ max_length: 10, price: 5000 }];
   assert.equal(priceForLength(tiers, 10), 5000);
-  assert.equal(priceForLength(tiers, 11), 0);
-  assert.equal(priceForLength(tiers, 64), 0);
+  assert.equal(priceForLength(tiers, 11), null);
+  assert.equal(priceForLength(tiers, 64), null);
 });
 
 test("priceForLength: 64 catch-all tier matches every possible length", () => {
@@ -51,6 +51,18 @@ test("priceForLength: 64 catch-all tier matches every possible length", () => {
   ];
   assert.equal(priceForLength(tiers, 64), 1);
   assert.equal(priceForLength(tiers, 5), 1);
+});
+
+test("priceForLength: empty/missing tiers is 0 (free) at any length, including beyond 64", () => {
+  assert.equal(priceForLength([], 5), 0);
+  assert.equal(priceForLength([], 64), 0);
+  assert.equal(priceForLength(undefined, 100), 0);
+});
+
+test("priceForLength: explicit 64 catch-all still returns its own price, not null", () => {
+  const tiers = [{ max_length: 64, price: 21000 }];
+  assert.equal(priceForLength(tiers, 64), 21000);
+  assert.equal(priceForLength(tiers, 1), 21000);
 });
 
 // -- formatSats ---------------------------------------------------------
@@ -100,9 +112,9 @@ test("tierSummary: unsorted input is sorted before summarizing", () => {
   assert.equal(tierSummary(tiers), "1–2: 1000 sats · 3–4: 100 sats · 5+: free");
 });
 
-test("tierSummary: no-tier trailing range (tiers stop short of 64)", () => {
+test("tierSummary: no-tier trailing range (tiers stop short of 64) renders as unavailable", () => {
   const tiers = [{ max_length: 10, price: 5000 }];
-  assert.equal(tierSummary(tiers), "1–10: 5 sats · 11+: free");
+  assert.equal(tierSummary(tiers), "1–10: 5 sats · 11+: unavailable");
 });
 
 test("tierSummary: single 64 catch-all tier renders fully open-ended", () => {
@@ -121,5 +133,5 @@ test("tierSummary: duplicate max_length (malformed, untrusted announcement) neve
     const [, start, end] = match;
     assert.ok(Number(start) <= Number(end), `inverted segment found: ${match[0]}`);
   }
-  assert.equal(summary, "1–4: 0.1 sats · 5+: free");
+  assert.equal(summary, "1–4: 0.1 sats · 5+: unavailable");
 });

@@ -125,6 +125,14 @@ test("filterRows: name filter keeps only zero-price rows for that name's length"
   assert.deepEqual(result.map(r => r.domain), ["cheap.example.com"]);
 });
 
+test("filterRows: name filter excludes unavailable (null-price) rows, not just non-zero ones", () => {
+  const free = row({ domain: "free.example.com", tiers: [{ max_length: 64, price: 0 }] });
+  // No tier covers a 5-char name here -> priceForLength returns null (unavailable).
+  const unavailable = row({ domain: "unavailable.example.com", tiers: [{ max_length: 3, price: 0 }] });
+  const result = filterRows([free, unavailable], { name: "alice" });
+  assert.deepEqual(result.map(r => r.domain), ["free.example.com"]);
+});
+
 test("filterRows: name filter uses the name's own length against tier boundaries", () => {
   const rows = [
     row({ domain: "a.example.com", tiers: [{ max_length: 3, price: 0 }, { max_length: 64, price: 1000 }] }),
@@ -178,6 +186,23 @@ test("sortRows: price sorts ascending by priceForLength at the given length", ()
     "free.example.com",
     "cheap.example.com",
     "expensive.example.com",
+  ]);
+});
+
+test("sortRows: price sort puts unavailable (null-price) rows last, ties still alphabetical", () => {
+  const rows = [
+    // No tier covers length 5 -> priceForLength(_, 5) is null (unavailable).
+    row({ domain: "z-unavailable.example.com", tiers: [{ max_length: 3, price: 0 }] }),
+    row({ domain: "cheap.example.com", tiers: [{ max_length: 64, price: 100 }] }),
+    row({ domain: "a-unavailable.example.com", tiers: [{ max_length: 3, price: 0 }] }),
+    row({ domain: "free.example.com", tiers: [{ max_length: 64, price: 0 }] }),
+  ];
+  const result = sortRows(rows, { by: "price", length: 5 });
+  assert.deepEqual(result.map(r => r.domain), [
+    "free.example.com",
+    "cheap.example.com",
+    "a-unavailable.example.com",
+    "z-unavailable.example.com",
   ]);
 });
 
