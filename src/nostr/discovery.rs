@@ -209,9 +209,15 @@ mod tests {
     #[test]
     fn validates_matching_announcement_and_well_known_document() {
         let (config, configuration, keys) = fixture();
-        let event = build_event(&config, &configuration, &keys, 1_700_000_000)
-            .unwrap()
-            .unwrap();
+        let event = build_event(
+            &config,
+            &configuration,
+            &keys,
+            1_700_000_000,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+        .unwrap();
         assert!(validate_event(&event, 1_700_000_001).is_ok());
         let document = crate::nostr::announcement::well_known(&config, &keys)
             .unwrap()
@@ -227,9 +233,15 @@ mod tests {
             contact: None,
             terms_url: Some("https://example.com/terms".to_owned()),
         });
-        let event = build_event(&config, &configuration, &keys, 1_700_000_000)
-            .unwrap()
-            .unwrap();
+        let event = build_event(
+            &config,
+            &configuration,
+            &keys,
+            1_700_000_000,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+        .unwrap();
         let announcement: ServiceAnnouncement = serde_json::from_str(&event.content).unwrap();
         assert_eq!(announcement.about.as_deref(), Some("About us"));
         assert_eq!(
@@ -257,6 +269,7 @@ mod tests {
             &keys,
             1_700_000_000,
             "https://localhost",
+            &BTreeMap::new(),
         )
         .unwrap();
         let error = validate_event(&event, 1_700_000_001).unwrap_err();
@@ -276,6 +289,7 @@ mod tests {
             &keys,
             1_700_000_000,
             "https://example.com",
+            &BTreeMap::new(),
         )
         .unwrap();
         let error = validate_event(&event, 1_700_000_001).unwrap_err();

@@ -64,6 +64,10 @@ The content is UTF-8 JSON:
       ]
     }
   ],
+  "users": [
+    {"domain": "pay.example.com", "count": 42},
+    {"domain": "tips.example.org", "count": 0}
+  ],
   "software": {"name": "lnaddrd", "version": "0.2.0"}
 }
 ```
@@ -194,6 +198,21 @@ an operator.
 
 Publishing exact prices makes business policy public and may become stale.
 Operators MAY omit `pricing`; clients then fetch a live quote.
+
+`users` is an operator's self-reported claim of active registrations per
+domain, with the exact shape `"users": [{"domain": "<announced domain>",
+"count": <non-negative integer>}]`. The field is optional; its absence MUST
+NOT invalidate an otherwise valid announcement. `count` reflects only
+addresses currently in the active state; a domain with no active addresses
+MUST still be represented with an entry of `count: 0` rather than omitted,
+so consumers can distinguish "no users yet" from "operator did not report."
+Consumers MUST silently drop individual entries that are invalid — an
+unknown domain not present in the announcement's `domains`, a negative
+count, a fractional count, or a non-numeric count — rather than failing
+validation of the whole announcement. Because the field is an operator
+claim rather than a cryptographic proof, consumers MAY cross-check it
+against other available evidence (for example a scan of published backup
+records) and MAY prefer, average, or flag a mismatch as they see fit.
 
 Backup relay tags reveal infrastructure choices but no private address records.
 Operators concerned about this MAY omit them because the well-known document

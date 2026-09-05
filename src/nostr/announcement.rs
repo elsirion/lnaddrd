@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, ensure};
 use nostr_sdk::prelude::{Event, EventBuilder, Kind, Tag, Timestamp};
@@ -34,12 +38,20 @@ pub struct ServiceAnnouncement {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub pricing: Vec<DomainPricing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub users: Option<Vec<DomainUsers>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub software: Option<Software>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub migration_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainUsers {
+    pub domain: String,
+    pub count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +140,7 @@ pub fn build_event(
     service_configuration: &ServiceConfigurationRecord,
     keys: &ServiceKeys,
     now: u64,
+    active_address_counts: &BTreeMap<String, u64>,
 ) -> Result<Option<Event>> {
     let Some(origin) = config.public_base_url.as_deref() else {
         return Ok(None);
@@ -146,7 +159,15 @@ pub fn build_event(
         warn!("Origin or domain is not public, skipping service announcement");
         return Ok(None);
     }
-    build_event_from_origin(config, service_configuration, keys, now, origin).map(Some)
+    build_event_from_origin(
+        config,
+        service_configuration,
+        keys,
+        now,
+        origin,
+        active_address_counts,
+    )
+    .map(Some)
 }
 
 /// Constructs an announcement event for an already-normalized origin, without
@@ -160,9 +181,17 @@ pub(crate) fn build_event_unchecked(
     keys: &ServiceKeys,
     now: u64,
     origin: &str,
+    active_address_counts: &BTreeMap<String, u64>,
 ) -> Result<Event> {
     let origin = normalized_origin(origin)?;
-    build_event_from_origin(config, service_configuration, keys, now, origin)
+    build_event_from_origin(
+        config,
+        service_configuration,
+        keys,
+        now,
+        origin,
+        active_address_counts,
+    )
 }
 
 fn build_event_from_origin(
@@ -171,6 +200,7 @@ fn build_event_from_origin(
     keys: &ServiceKeys,
     now: u64,
     origin: String,
+    active_address_counts: &BTreeMap<String, u64>,
 ) -> Result<Event> {
     let mut domains = service_configuration
         .domains
@@ -178,6 +208,16 @@ fn build_event_from_origin(
         .cloned()
         .collect::<Vec<_>>();
     domains.sort();
+    let users = domains
+        .iter()
+        .map(|domain| DomainUsers {
+            domain: domain.as_str().to_owned(),
+            count: active_address_counts
+                .get(domain.as_str())
+                .copied()
+                .unwrap_or(0),
+        })
+        .collect::<Vec<_>>();
     let pricing = service_configuration
         .domains
         .iter()
@@ -236,6 +276,7 @@ fn build_event_from_origin(
         domains,
         capabilities: capabilities.into_iter().collect(),
         pricing,
+        users: if users.is_empty() { None } else { Some(users) },
         software: Some(Software {
             name: "lnaddrd".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -317,10 +358,17 @@ impl AnnouncementWorker {
             .map(|value| value.parse())
             .collect::<Result<Vec<Domain>>>()?;
         let configuration = self.repository.service_configuration(&domains).await?;
+        let active_address_counts = self.repository.active_address_counts(&domains).await?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        if let Some(event) = build_event(&self.config, &configuration, &self.keys, now)? {
+        if let Some(event) = build_event(
+            &self.config,
+            &configuration,
+            &self.keys,
+            now,
+            &active_address_counts,
+        )? {
             let publication = self.publisher.publish(&event).await?;
             info!(event_id=%event.id, relay_count=publication.accepted_by.len(), "Service announcement published");
         }
@@ -421,9 +469,15 @@ mod tests {
     fn build_event_skips_publication_for_non_public_origin() {
         let (config, configuration, keys) = fixture("https://localhost", &["example.com"]);
         assert!(
-            build_event(&config, &configuration, &keys, 1_700_000_000)
-                .unwrap()
-                .is_none()
+            build_event(
+                &config,
+                &configuration,
+                &keys,
+                1_700_000_000,
+                &BTreeMap::new()
+            )
+            .unwrap()
+            .is_none()
         );
     }
 
@@ -435,9 +489,60 @@ mod tests {
             DomainConfigurationRecord::default(),
         );
         assert!(
-            build_event(&config, &configuration, &keys, 1_700_000_000)
-                .unwrap()
-                .is_none()
+            build_event(
+                &config,
+                &configuration,
+                &keys,
+                1_700_000_000,
+                &BTreeMap::new()
+            )
+            .unwrap()
+            .is_none()
         );
+    }
+
+    #[test]
+    fn build_event_includes_announced_user_counts_per_domain() {
+        let (config, configuration, keys) = fixture(
+            "https://example.com",
+            &["example.com", "second.example.net"],
+        );
+        let counts = BTreeMap::from([
+            ("example.com".to_owned(), 3u64),
+            ("second.example.net".to_owned(), 0u64),
+        ]);
+        let event = build_event(&config, &configuration, &keys, 1_700_000_000, &counts)
+            .unwrap()
+            .unwrap();
+        let announcement: ServiceAnnouncement = serde_json::from_str(&event.content).unwrap();
+        let users = announcement.users.expect("users field should be present");
+        assert_eq!(users.len(), 2);
+        assert!(
+            users
+                .iter()
+                .any(|entry| entry.domain == "example.com" && entry.count == 3)
+        );
+        assert!(
+            users
+                .iter()
+                .any(|entry| entry.domain == "second.example.net" && entry.count == 0)
+        );
+    }
+
+    #[test]
+    fn build_event_omits_users_field_when_no_domains_are_configured() {
+        let (config, mut configuration, keys) = fixture("https://example.com", &["example.com"]);
+        configuration.domains.clear();
+        let event = build_event(
+            &config,
+            &configuration,
+            &keys,
+            1_700_000_000,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+        .unwrap();
+        let announcement: ServiceAnnouncement = serde_json::from_str(&event.content).unwrap();
+        assert!(announcement.users.is_none());
     }
 }

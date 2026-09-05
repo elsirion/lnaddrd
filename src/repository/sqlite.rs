@@ -439,6 +439,31 @@ impl SqlitePaymentAddressRepository {
         .await?
     }
 
+    /// Counts active payment addresses per requested domain, for publishing
+    /// self-reported user counts in service announcements. Domains with no
+    /// active addresses are included with a count of zero.
+    pub async fn active_address_counts(
+        &self,
+        domains: &[crate::domain::Domain],
+    ) -> Result<BTreeMap<String, u64>> {
+        let pool = self.pool.clone();
+        let domains = domains.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let mut connection = pool.get()?;
+            let mut counts = BTreeMap::new();
+            for domain in domains {
+                let count = payment_addresses::table
+                    .filter(payment_addresses::domain.eq(domain.as_str()))
+                    .filter(payment_addresses::state.eq("active"))
+                    .count()
+                    .get_result::<i64>(&mut connection)?;
+                counts.insert(domain.as_str().to_owned(), u64::try_from(count)?);
+            }
+            Ok(counts)
+        })
+        .await?
+    }
+
     pub async fn relay_replication(&self) -> Result<Vec<RelayReplicationRecord>> {
         let pool = self.pool.clone();
         tokio::task::spawn_blocking(move || {
@@ -1992,6 +2017,62 @@ mod tests {
         let replication = repository.relay_replication().await.unwrap();
         assert_eq!(replication.len(), 1);
         assert_eq!(replication[0].confirmed_events, 1);
+    }
+
+    #[tokio::test]
+    async fn active_address_counts_counts_only_active_addresses_per_domain() {
+        let (_directory, repository) = repository();
+        repository
+            .add_payment_address(
+                "example.com",
+                "alice",
+                "receiver@example.net".parse().unwrap(),
+                "secret-alice",
+            )
+            .await
+            .unwrap();
+        repository
+            .add_payment_address(
+                "example.com",
+                "bob",
+                "receiver2@example.net".parse().unwrap(),
+                "secret-bob",
+            )
+            .await
+            .unwrap();
+        repository
+            .add_payment_address(
+                "other.example",
+                "carol",
+                "receiver3@example.net".parse().unwrap(),
+                "secret-carol",
+            )
+            .await
+            .unwrap();
+        // A non-active address must not be counted.
+        {
+            let mut connection = repository.pool.get().unwrap();
+            diesel::insert_into(payment_addresses::table)
+                .values((
+                    payment_addresses::username.eq("dave"),
+                    payment_addresses::domain.eq("example.com"),
+                    payment_addresses::destination.eq("receiver4@example.net"),
+                    payment_addresses::authentication_token.eq("secret-dave"),
+                    payment_addresses::state.eq("publishing"),
+                ))
+                .execute(&mut connection)
+                .unwrap();
+        }
+
+        let domains = vec![
+            "example.com".parse().unwrap(),
+            "other.example".parse().unwrap(),
+            "empty.example".parse().unwrap(),
+        ];
+        let counts = repository.active_address_counts(&domains).await.unwrap();
+        assert_eq!(counts.get("example.com"), Some(&2));
+        assert_eq!(counts.get("other.example"), Some(&1));
+        assert_eq!(counts.get("empty.example"), Some(&0));
     }
 
     #[tokio::test]

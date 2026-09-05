@@ -1122,7 +1122,15 @@ async fn publish_announcement(
     configuration: &ServiceConfigurationRecord,
 ) -> Result<()> {
     let now = u64::try_from(unix_now()?)?;
-    if let Some(event) = build_event(&state.config, configuration, &state.keys, now)? {
+    let domains = configuration.domains.keys().cloned().collect::<Vec<_>>();
+    let active_address_counts = state.repository.active_address_counts(&domains).await?;
+    if let Some(event) = build_event(
+        &state.config,
+        configuration,
+        &state.keys,
+        now,
+        &active_address_counts,
+    )? {
         state.publisher.publish(&event).await?;
     }
     Ok(())
