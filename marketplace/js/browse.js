@@ -1,0 +1,110 @@
+// Pure row-building/filter/sort logic for the flat domain browser. Kept
+// dependency-free (no DOM) so it can be unit tested directly; app.js/render.js
+// wire it to the live operator/verification state.
+
+import { priceForLength } from "./pricing.js";
+
+/**
+ * Flattens discovered operators into one row per verified domain.
+ *
+ * `operators` is `[{origin, name, pubkey, capabilities, verifiedDomains,
+ * pricing, usersCount, usersApprox}]`. `pricing` is the announcement's
+ * pricing array (`[{domain, currency, tiers}]`, see docs/protocol/02);
+ * `usersCount`/`usersApprox` are operator-level (not per-domain) backup-record
+ * counts and are copied onto every row for that operator unchanged.
+ *
+ * Each row is `{domain, origin, operatorName, pubkey, canRegister, tiers,
+ * usersCount, usersApprox}`, where `tiers` is the pricing entry's tiers for
+ * that domain, or `[]` if the operator published none.
+ */
+export function buildRows(operators) {
+  const rows = [];
+  for (const operator of operators) {
+    const capabilities = Array.isArray(operator.capabilities) ? operator.capabilities : [];
+    const canRegister = capabilities.includes("registration-api-v1") && capabilities.includes("nostr-auth");
+    const pricing = Array.isArray(operator.pricing) ? operator.pricing : [];
+    const domains = Array.isArray(operator.verifiedDomains) ? operator.verifiedDomains : [];
+
+    for (const domain of domains) {
+      const pricingEntry = pricing.find(p => p.domain === domain);
+      const tiers = pricingEntry && Array.isArray(pricingEntry.tiers) ? pricingEntry.tiers : [];
+      rows.push({
+        domain,
+        origin: operator.origin,
+        operatorName: operator.name,
+        pubkey: operator.pubkey,
+        canRegister,
+        tiers,
+        usersCount: operator.usersCount,
+        usersApprox: operator.usersApprox,
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Filters rows in memory.
+ *
+ * `query` (case-insensitive substring on `domain` or `operatorName`) and
+ * `name` (non-empty: keep only rows where `priceForLength(tiers,
+ * name.length) === 0`, i.e. that name would register free) combine with AND
+ * semantics. Either filter is skipped when its value is absent/empty.
+ */
+export function filterRows(rows, { query, name } = {}) {
+  let result = rows;
+
+  if (query) {
+    const needle = query.toLowerCase();
+    result = result.filter(
+      row =>
+        row.domain.toLowerCase().includes(needle) ||
+        (row.operatorName ?? "").toLowerCase().includes(needle)
+    );
+  }
+
+  if (name) {
+    result = result.filter(row => priceForLength(row.tiers, name.length) === 0);
+  }
+
+  return result;
+}
+
+function compareDomain(a, b) {
+  return a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0;
+}
+
+/**
+ * Returns a new, sorted array of rows (pure — never mutates `rows`).
+ *
+ * `by`:
+ *  - "alpha": domain ascending.
+ *  - "price": `priceForLength(tiers, length)` ascending (cheapest first).
+ *  - "users": `usersCount` descending; rows with no count sort last.
+ * Every order ties-breaks by domain A→Z.
+ */
+export function sortRows(rows, { by, length } = {}) {
+  const copy = [...rows];
+
+  copy.sort((a, b) => {
+    let primary = 0;
+    if (by === "price") {
+      primary = priceForLength(a.tiers, length ?? 0) - priceForLength(b.tiers, length ?? 0);
+    } else if (by === "users") {
+      const aMissing = a.usersCount === undefined || a.usersCount === null;
+      const bMissing = b.usersCount === undefined || b.usersCount === null;
+      if (aMissing && bMissing) {
+        primary = 0;
+      } else if (aMissing) {
+        primary = 1;
+      } else if (bMissing) {
+        primary = -1;
+      } else {
+        primary = b.usersCount - a.usersCount;
+      }
+    }
+    return primary !== 0 ? primary : compareDomain(a, b);
+  });
+
+  return copy;
+}
