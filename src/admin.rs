@@ -46,6 +46,13 @@ const ADMIN_POLICY_JS: &str = r#"
     form.querySelector('[data-save-pricing]').disabled = true;
   }
 
+  function anyPriced(form) {
+    if (Number(form.querySelector('[data-catchall-price]').value) > 0) return true;
+    return Array.from(form.querySelectorAll('[data-tier-list] [data-tier-price]')).some(function (input) {
+      return Number(input.value) > 0;
+    });
+  }
+
   function syncTiers(form) {
     var tierList = form.querySelector('[data-tier-list]');
     var rows = Array.from(form.querySelectorAll('[data-tier-row]'));
@@ -70,7 +77,7 @@ const ADMIN_POLICY_JS: &str = r#"
       var priceSats = Number(priceValue);
       var price = Math.round(priceSats * 1000);
       if (lengthValue === '' || priceValue === '') message ||= 'Complete both fields for every tier.';
-      if (!Number.isInteger(length) || length < 1 || length > 64) message ||= 'Maximum length must be a whole number from 1 to 64.';
+      if (!Number.isInteger(length) || length < 1 || length > 63) message ||= 'Maximum length must be a whole number from 1 to 63.';
       if (!Number.isFinite(priceSats) || priceSats < 0 || !Number.isSafeInteger(price) || Math.abs(price / 1000 - priceSats) > 0.0000001) message ||= 'Price must be a non-negative sat amount with at most three decimals.';
       if (length <= previousLength) message ||= 'Tier lengths must be strictly increasing.';
       if (price > previousPrice) message ||= 'Prices must stay the same or decrease for longer names.';
@@ -78,29 +85,40 @@ const ADMIN_POLICY_JS: &str = r#"
       previousPrice = price;
       values.push(length + '=' + price);
     });
-    if (!rows.length) message = 'Add at least one pricing tier.';
+    var catchInput = form.querySelector('[data-catchall-price]');
+    var catchSats = Number(catchInput.value);
+    var catchMsat = Math.round(catchSats * 1000);
+    if (catchInput.value === '' || !Number.isFinite(catchSats) || catchSats < 0 || !Number.isSafeInteger(catchMsat) || Math.abs(catchMsat / 1000 - catchSats) > 0.0000001) message ||= 'Base price must be a non-negative sat amount with at most three decimals.';
+    if (catchMsat > previousPrice) message ||= 'Prices must stay the same or decrease for longer names.';
+    values.push('64=' + catchMsat);
     form.querySelector('[data-tiers-value]').value = values.join('\n');
     error.textContent = message;
     error.classList.toggle('hidden', !message);
     // Tier edits never re-check the recipient (saving re-validates everything
-    // server-side anyway): the button stays live as long as the tiers parse
-    // and the last recipient check succeeded.
-    if (form.querySelector('[data-payment-enabled]').checked) {
-      var recipientValid = form.querySelector('[data-recipient-validation] [data-valid="true"]') !== null;
-      form.querySelector('[data-save-pricing]').disabled = !!message || !recipientValid;
+    // server-side anyway): while any price is set, the button stays live as
+    // long as the schedule parses and the last recipient check succeeded.
+    var priced = anyPriced(form);
+    form.querySelector('[data-destination-block]').classList.toggle('hidden', !priced);
+    var recipientValid = form.querySelector('[data-recipient-validation] [data-valid="true"]') !== null;
+    form.querySelector('[data-save-pricing]').disabled = !!message || (priced && !recipientValid);
+    // Kick off one recipient check at the moment pricing becomes active.
+    if (priced && form.dataset.priced !== 'true' && !recipientValid && form.querySelector('[data-payment-destination]').value.trim()) {
+      pending(form, 'Checking recipient and LUD-21 support…');
+      htmx.trigger(form.querySelector('[data-payment-destination]'), 'pricing-tiers-changed');
     }
+    form.dataset.priced = priced ? 'true' : 'false';
     return !message;
   }
 
   function addTier(form) {
     var lengths = Array.from(form.querySelectorAll('[data-tier-length]')).map(function (input) {
       return Number(input.value);
-    }).filter(function (value) { return Number.isInteger(value) && value >= 1 && value <= 64; });
-    var next = Math.min(64, lengths.length ? Math.max.apply(null, lengths) + 1 : 1);
+    }).filter(function (value) { return Number.isInteger(value) && value >= 1 && value <= 63; });
+    var next = Math.min(63, lengths.length ? Math.max.apply(null, lengths) + 1 : 1);
     var row = document.createElement('div');
     row.dataset.tierRow = '';
     row.className = 'grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end';
-    row.innerHTML = '<div><label class="mb-2 block text-xs font-medium text-gray-700">Up to length</label><input data-tier-length type="number" min="1" max="64" step="1" required class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><div><label class="mb-2 block text-xs font-medium text-gray-700">Price (sats)</label><input data-tier-price type="number" min="0" step="0.001" required value="0" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50">Remove</button>';
+    row.innerHTML = '<div><label class="mb-2 block text-xs font-medium text-gray-700">Up to length</label><input data-tier-length type="number" min="1" max="63" step="1" required class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><div><label class="mb-2 block text-xs font-medium text-gray-700">Price (sats)</label><input data-tier-price type="number" min="0" step="0.001" required value="0" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50">Remove</button>';
     row.querySelector('[data-tier-length]').value = next;
     form.querySelector('[data-tier-list]').appendChild(row);
     row.querySelector('[data-tier-length]').focus();
@@ -110,20 +128,9 @@ const ADMIN_POLICY_JS: &str = r#"
   function init(root) {
     root.querySelectorAll('[data-payment-policy]:not([data-policy-ready])').forEach(function (form) {
       form.dataset.policyReady = '';
-      var enabled = form.querySelector('[data-payment-enabled]');
-      var fields = form.querySelector('[data-payment-fields]');
       var destination = form.querySelector('[data-payment-destination]');
-      function toggle() {
-        fields.classList.toggle('hidden', !enabled.checked);
-        if (!enabled.checked) form.querySelector('[data-save-pricing]').disabled = false;
-        else if (syncTiers(form) && destination.value.trim()) {
-          pending(form, 'Checking recipient and LUD-21 support…');
-          htmx.trigger(destination, 'pricing-tiers-changed');
-        }
-      }
-      enabled.addEventListener('change', toggle);
       destination.addEventListener('input', function () {
-        if (enabled.checked) pending(form, destination.value.trim() ? 'Checking recipient and LUD-21 support…' : 'Enter a recipient to check LUD-21 support.');
+        if (anyPriced(form)) pending(form, destination.value.trim() ? 'Checking recipient and LUD-21 support…' : 'Enter a recipient to check LUD-21 support.');
       });
       form.querySelector('[data-add-tier]').addEventListener('click', function () { addTier(form); });
       form.querySelector('[data-tier-list]').addEventListener('click', function (event) {
@@ -134,14 +141,16 @@ const ADMIN_POLICY_JS: &str = r#"
       form.querySelector('[data-tier-list]').addEventListener('focusout', function () {
         setTimeout(function () { syncTiers(form); }, 0);
       });
+      form.querySelector('[data-catchall-price]').addEventListener('input', function () { syncTiers(form); });
       form.addEventListener('submit', function (event) {
-        if (enabled.checked && (!syncTiers(form) || form.querySelector('[data-recipient-validation] [data-valid="true"]') === null)) {
+        if (!syncTiers(form)) {
+          event.preventDefault();
+        } else if (anyPriced(form) && form.querySelector('[data-recipient-validation] [data-valid="true"]') === null) {
           event.preventDefault();
           pending(form, 'Complete a successful recipient check before saving.');
         }
       });
       syncTiers(form);
-      toggle();
     });
   }
   document.addEventListener('DOMContentLoaded', function () { init(document); });
@@ -156,7 +165,7 @@ const ADMIN_POLICY_JS: &str = r#"
       var valid = status.querySelector('[data-valid="true"]') !== null;
       status.dataset.valid = valid ? 'true' : 'false';
       var tiersBroken = !form.querySelector('[data-tier-error]').classList.contains('hidden');
-      form.querySelector('[data-save-pricing]').disabled = form.querySelector('[data-payment-enabled]').checked && (!valid || tiersBroken);
+      form.querySelector('[data-save-pricing]').disabled = tiersBroken || (anyPriced(form) && !valid);
     });
   });
 })();
@@ -297,8 +306,6 @@ pub struct PaymentPolicyForm {
     domain: String,
     destination: String,
     tiers: String,
-    #[serde(default)]
-    enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -911,7 +918,17 @@ pub async fn payment_policy_submit(
         Ok(domain) => domain,
         Err(error) => return configuration_error(error),
     };
-    let policy = if form.enabled {
+    // A schedule whose every price is 0 sats means registration is free: no
+    // destination is needed and no policy is stored.
+    let any_priced = form.tiers.lines().any(|line| match line.split_once('=') {
+        Some((_, price)) => price
+            .trim()
+            .parse::<u64>()
+            .map(|value| value > 0)
+            .unwrap_or(true),
+        None => !line.trim().is_empty(),
+    });
+    let policy = if any_priced {
         let policy = match parse_policy(&form.destination, &form.tiers) {
             Ok(policy) => policy,
             Err(error) => return configuration_error(error),
@@ -1024,38 +1041,41 @@ fn configuration_markup(
             div class="space-y-6" {
                 section class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm" {
                 h2 class="text-xl font-semibold" { "Registration pricing" }
-                p class="mt-1 text-sm text-gray-500" { "Optionally charge based on username length and verify payment through LUD-21." }
+                p class="mt-1 text-sm text-gray-500" { "Charge based on username length, verified through LUD-21. Leave every price at 0 sats to keep registration free." }
                 @let destination = domain_configuration.payment_policy.as_ref()
                     .and_then(|policy| Destination::try_from(policy.destination.clone()).ok())
                     .map(|value| value.to_string()).unwrap_or_default();
-                @let payment_fields_class = if domain_configuration.payment_policy.is_some() { "space-y-5" } else { "hidden space-y-5" };
+                @let catchall_msat = domain_configuration.payment_policy.as_ref()
+                    .and_then(|policy| policy.tiers.iter().find(|tier| tier.max_length == 64))
+                    .map(|tier| tier.price_msat).unwrap_or(0);
+                @let any_priced = domain_configuration.payment_policy.as_ref()
+                    .is_some_and(|policy| policy.tiers.iter().any(|tier| tier.price_msat > 0));
+                @let destination_block_class = if any_priced { "" } else { "hidden" };
                 form method="post" action="/admin/payment-policy"
-                    class="mt-5 space-y-4" data-payment-policy hx-post="/admin/payment-policy" hx-target="#configuration" hx-swap="innerHTML" {
+                    class="mt-5 space-y-5" data-payment-policy hx-post="/admin/payment-policy" hx-target="#configuration" hx-swap="innerHTML" {
                     input type="hidden" name="csrf_token" value=(csrf_token);
                     input type="hidden" name="domain" value=(domain);
-                    label class="inline-flex cursor-pointer items-center gap-3" {
-                        input type="checkbox" name="enabled" value="true" data-payment-enabled class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                            checked[domain_configuration.payment_policy.is_some()];
-                        span class="text-sm font-medium text-gray-900" { "Require payment" }
-                    }
-                    div data-payment-fields class=(payment_fields_class) {
-                    div { label for="pricing-destination" class=(label_class()) { "Recipient LNURL or Lightning Address" }
-                        input id="pricing-destination" name="destination" value=(destination) class=(input_class()) data-payment-destination
-                            hx-post="/admin/payment-policy/validate" hx-trigger="input changed delay:600ms, pricing-tiers-changed delay:300ms" hx-include="closest form" hx-target="#recipient-validation" hx-swap="innerHTML" hx-sync="this:replace";
-                        div id="recipient-validation" class="mt-2 min-h-5 text-sm text-gray-500" data-recipient-validation { "Enter a recipient to check LUD-21 support." }
-                    }
                     div { div class="flex items-center justify-between gap-4" { div { label class=(label_class()) { "Pricing tiers" } p class="text-xs text-gray-500" { "Shorter names must not cost less than longer names." } } button type="button" data-add-tier class=(secondary_button()) { "+ Add tier" } }
                         div data-tier-list class="mt-3 space-y-3" {
                             @if let Some(policy) = &domain_configuration.payment_policy {
-                                @for tier in &policy.tiers { (tier_row(Some(tier.max_length), Some(tier.price_msat))) }
-                            } @else { (tier_row(Some(1), Some(0))) }
+                                @for tier in policy.tiers.iter().filter(|tier| tier.max_length < 64) { (tier_row(Some(tier.max_length), Some(tier.price_msat))) }
+                            }
+                        }
+                        div class="mt-3 grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end" {
+                            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Any longer names" } p class="p-2.5 text-sm text-gray-500" { "Base price for every other username" } }
+                            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Price (sats)" } input data-catchall-price type="number" min="0" step="0.001" required value=(format_sats(catchall_msat)) class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
                         }
                         input type="hidden" name="tiers" data-tiers-value;
                         p data-tier-error class="mt-2 hidden text-sm text-red-700" {}
                     }
-                    p class="text-sm text-gray-500" { "The check requests an unpaid invoice in the lowest configured amount and verifies its LUD-21 endpoint." }
+                    div data-destination-block class=(destination_block_class) {
+                        label for="pricing-destination" class=(label_class()) { "Recipient LNURL or Lightning Address" }
+                        input id="pricing-destination" name="destination" value=(destination) class=(input_class()) data-payment-destination
+                            hx-post="/admin/payment-policy/validate" hx-trigger="input changed delay:600ms, pricing-tiers-changed delay:300ms" hx-include="closest form" hx-target="#recipient-validation" hx-swap="innerHTML" hx-sync="this:replace";
+                        div id="recipient-validation" class="mt-2 min-h-5 text-sm text-gray-500" data-recipient-validation { "Enter a recipient to check LUD-21 support." }
+                        p class="mt-2 text-sm text-gray-500" { "The check requests an unpaid invoice in the lowest configured amount and verifies its LUD-21 endpoint." }
                     }
-                    div { button type="submit" data-save-pricing class=(primary_button()) disabled[domain_configuration.payment_policy.is_some()] { "Save pricing" } }
+                    div { button type="submit" data-save-pricing class=(primary_button()) disabled[any_priced] { "Save pricing" } }
                 }
                 }
                 section class="rounded-lg border border-gray-200 bg-white p-6 shadow-sm" {
@@ -1412,6 +1432,54 @@ mod tests {
         assert!(markup.contains("Price (sats)"));
         assert!(markup.contains("value=\"10\""));
         assert!(!markup.contains("textarea"));
+        assert!(markup.contains("Any longer names"));
+        assert!(markup.contains("data-catchall-price"));
+        assert!(markup.contains("data-destination-block"));
+        assert!(!markup.contains("Require payment"));
+        assert!(!markup.contains("data-payment-enabled"));
+    }
+
+    #[test]
+    fn catchall_tier_renders_stored_price_and_hides_others_from_rows() {
+        use crate::nostr::codec::{
+            DomainConfigurationRecord, PaymentPolicyRecord, PaymentTierRecord,
+        };
+        use std::collections::BTreeMap;
+
+        let domain: Domain = "example.com".parse().unwrap();
+        let destination: Destination = "receiver@example.net".parse().unwrap();
+        let configuration = ServiceConfigurationRecord {
+            schema: 1,
+            revision: 1,
+            instance_id: "test".to_owned(),
+            domains: BTreeMap::from([(
+                domain,
+                DomainConfigurationRecord {
+                    payment_policy: Some(PaymentPolicyRecord {
+                        destination: (&destination).into(),
+                        tiers: vec![
+                            PaymentTierRecord {
+                                max_length: 5,
+                                price_msat: 10_000,
+                            },
+                            PaymentTierRecord {
+                                max_length: 64,
+                                price_msat: 2_000,
+                            },
+                        ],
+                    }),
+                    reserved_names: vec![],
+                },
+            )]),
+            profile: None,
+            updated_at: 1,
+        };
+        let markup =
+            configuration_markup(&configuration, "csrf", Some("example.com"), None).into_string();
+        // The 64-length catch-all feeds the fixed base-price input, not a
+        // removable tier row: exactly one row (max_length 5) remains.
+        assert_eq!(markup.matches("data-tier-row").count(), 1);
+        assert!(markup.contains("value=\"2\""));
     }
 
     #[test]
