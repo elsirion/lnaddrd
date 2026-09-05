@@ -21,6 +21,17 @@ pub struct SafeHttpClient;
 
 impl SafeHttpClient {
     pub async fn get_json<T: DeserializeOwned>(&self, value: &str) -> Result<T> {
+        self.get_json_with_timeout(value, REQUEST_TIMEOUT).await
+    }
+
+    /// Like [`Self::get_json`] with a caller-chosen timeout: payment flows hit
+    /// gateway-backed invoice generation that legitimately outlives the
+    /// default budget.
+    pub async fn get_json_with_timeout<T: DeserializeOwned>(
+        &self,
+        value: &str,
+        timeout: Duration,
+    ) -> Result<T> {
         let url = Url::parse(value).context("Invalid destination URL")?;
         ensure!(
             url.scheme() == "https",
@@ -50,16 +61,21 @@ impl SafeHttpClient {
         }
 
         let client = Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .redirect(Policy::none())
             .resolve_to_addrs(host, &addresses)
             .build()
             .context("Could not construct outbound HTTP client")?;
         let mut response = client
-            .get(url)
+            .get(url.clone())
             .send()
             .await
-            .context("Destination request failed")?
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "Destination request to {host} failed: {:#}",
+                    anyhow::Error::from(error)
+                )
+            })?
             .error_for_status()
             .context("Destination returned an HTTP error")?;
         if let Some(length) = response.content_length() {

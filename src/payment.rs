@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
 use async_trait::async_trait;
@@ -36,6 +36,11 @@ pub struct VerifiableInvoice {
     pub verify_url: String,
 }
 
+/// Invoice generation behind LNURL endpoints is often gateway-backed and can
+/// legitimately stall past the default outbound budget, so payment flows get
+/// a longer per-request timeout.
+const PAYMENT_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone, Default)]
 pub struct PaymentClient {
     http: SafeHttpClient,
@@ -55,7 +60,10 @@ impl DestinationValidator for PaymentClient {
 
 impl PaymentClient {
     pub async fn resolve(&self, destination: &Destination) -> Result<PayResponse> {
-        let json: serde_json::Value = self.http.get_json(&destination.url()).await?;
+        let json: serde_json::Value = self
+            .http
+            .get_json_with_timeout(&destination.url(), PAYMENT_TIMEOUT)
+            .await?;
         decode_pay_response(json)
     }
 
@@ -72,7 +80,10 @@ impl PaymentClient {
         callback
             .query_pairs_mut()
             .append_pair("amount", &amount_msat.to_string());
-        let response: InvoiceResponse = self.http.get_json(callback.as_str()).await?;
+        let response: InvoiceResponse = self
+            .http
+            .get_json_with_timeout(callback.as_str(), PAYMENT_TIMEOUT)
+            .await?;
         ensure!(
             response.status.as_deref() != Some("ERROR"),
             "Recipient rejected invoice request: {}",
@@ -108,7 +119,10 @@ impl PaymentClient {
     }
 
     pub async fn verify(&self, invoice: &VerifiableInvoice) -> Result<bool> {
-        let response: VerifyResponse = self.http.get_json(&invoice.verify_url).await?;
+        let response: VerifyResponse = self
+            .http
+            .get_json_with_timeout(&invoice.verify_url, PAYMENT_TIMEOUT)
+            .await?;
         ensure!(
             response.status == "OK",
             "LUD-21 verifier returned an error: {}",

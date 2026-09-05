@@ -1092,6 +1092,7 @@ fn configuration_markup(
 }
 
 fn configuration_error(error: anyhow::Error) -> Response {
+    tracing::warn!("Admin configuration action failed: {error:#}");
     let markup = html! { div role="alert" class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800" { (error) } };
     (StatusCode::BAD_REQUEST, Html(markup.into_string())).into_response()
 }
