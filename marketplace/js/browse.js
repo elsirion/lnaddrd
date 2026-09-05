@@ -8,14 +8,30 @@ import { priceForLength } from "./pricing.js";
  * Flattens discovered operators into one row per verified domain.
  *
  * `operators` is `[{origin, name, pubkey, capabilities, verifiedDomains,
- * pricing, usersCount, usersApprox}]`. `pricing` is the announcement's
- * pricing array (`[{domain, currency, tiers}]`, see docs/protocol/02);
- * `usersCount`/`usersApprox` are operator-level (not per-domain) backup-record
- * counts and are copied onto every row for that operator unchanged.
+ * pricing, usersCount, usersApprox, userCounts}]`. `pricing` is the
+ * announcement's pricing array (`[{domain, currency, tiers}]`, see
+ * docs/protocol/02); `usersCount`/`usersApprox` are operator-level (not
+ * per-domain) backup-record scan counts. `userCounts` is the sanitized
+ * per-domain self-reported map from announcement.js's `validateAnnouncement`
+ * (`{domain: count}`, only domains the operator actually announced a usable
+ * count for).
+ *
+ * Per docs/superpowers/plans/2026-09-05-announced-user-counts.md's Global
+ * Constraints, an announced count wins per row. For each row:
+ *  - If `userCounts` has an entry for that row's domain, the row uses it:
+ *    `usersCount` from the map, `usersApprox: false`, `usersSource:
+ *    "announced"`.
+ *  - Else, if the operator announced a usable count for *some* domain (so
+ *    app.js never scheduled a backup-record scan for this operator at all —
+ *    see app.js's countedPubkeys gating), the row has no count and never
+ *    will: `usersCount: undefined`, `usersSource: "unavailable"`.
+ *  - Else the operator has no usable announced counts anywhere, so it went
+ *    through the normal scan path: `usersCount`/`usersApprox` copied from
+ *    the operator (as before Task 2), `usersSource: "observed"`.
  *
  * Each row is `{domain, origin, operatorName, pubkey, canRegister, tiers,
- * usersCount, usersApprox}`, where `tiers` is the pricing entry's tiers for
- * that domain, or `[]` if the operator published none.
+ * usersCount, usersApprox, usersSource}`, where `tiers` is the pricing
+ * entry's tiers for that domain, or `[]` if the operator published none.
  */
 export function buildRows(operators) {
   const rows = [];
@@ -24,10 +40,30 @@ export function buildRows(operators) {
     const canRegister = capabilities.includes("registration-api-v1") && capabilities.includes("nostr-auth");
     const pricing = Array.isArray(operator.pricing) ? operator.pricing : [];
     const domains = Array.isArray(operator.verifiedDomains) ? operator.verifiedDomains : [];
+    const userCounts = operator.userCounts && typeof operator.userCounts === "object" ? operator.userCounts : {};
+    const hasAnnouncedCounts = Object.keys(userCounts).length > 0;
 
     for (const domain of domains) {
       const pricingEntry = pricing.find(p => p.domain === domain);
       const tiers = pricingEntry && Array.isArray(pricingEntry.tiers) ? pricingEntry.tiers : [];
+
+      let usersCount;
+      let usersApprox;
+      let usersSource;
+      if (Object.prototype.hasOwnProperty.call(userCounts, domain)) {
+        usersCount = userCounts[domain];
+        usersApprox = false;
+        usersSource = "announced";
+      } else if (hasAnnouncedCounts) {
+        usersCount = undefined;
+        usersApprox = false;
+        usersSource = "unavailable";
+      } else {
+        usersCount = operator.usersCount;
+        usersApprox = operator.usersApprox;
+        usersSource = "observed";
+      }
+
       rows.push({
         domain,
         origin: operator.origin,
@@ -35,8 +71,9 @@ export function buildRows(operators) {
         pubkey: operator.pubkey,
         canRegister,
         tiers,
-        usersCount: operator.usersCount,
-        usersApprox: operator.usersApprox,
+        usersCount,
+        usersApprox,
+        usersSource,
       });
     }
   }

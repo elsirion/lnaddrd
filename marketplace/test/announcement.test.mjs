@@ -94,3 +94,73 @@ test("non-public domain entry fails validation", () => {
   assert.equal(result.ok, false);
   assert.equal(result.error, "Host is not public");
 });
+
+// -- users field sanitization (docs/protocol/02's "users" section) --------
+
+test("absent users field yields an empty userCounts map, still valid", () => {
+  const result = validateAnnouncement(makeEvent(), 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.userCounts, {});
+});
+
+test("valid users entries are kept, including a zero count", () => {
+  const event = makeEvent({}, {
+    domains: ["pay.example.com", "tips.example.org"].sort(),
+    users: [
+      { domain: "pay.example.com", count: 42 },
+      { domain: "tips.example.org", count: 0 },
+    ],
+  });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.userCounts, { "pay.example.com": 42, "tips.example.org": 0 });
+});
+
+test("users entry for a domain not in this announcement's domains is dropped", () => {
+  const event = makeEvent({}, { users: [{ domain: "unannounced.example.com", count: 5 }] });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.userCounts, {});
+});
+
+test("users entry with a negative count is dropped", () => {
+  const event = makeEvent({}, { users: [{ domain: "pay.example.com", count: -1 }] });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.userCounts, {});
+});
+
+test("users entry with a fractional count is dropped", () => {
+  const event = makeEvent({}, { users: [{ domain: "pay.example.com", count: 1.5 }] });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.userCounts, {});
+});
+
+test("users entry with a string count is dropped", () => {
+  const event = makeEvent({}, { users: [{ domain: "pay.example.com", count: "42" }] });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.userCounts, {});
+});
+
+test("a malformed users field never invalidates the announcement, and yields an empty map", () => {
+  for (const badUsers of ["not-an-array", 42, null, {}, [null], [{ domain: "pay.example.com" }], [{ count: 5 }]]) {
+    const result = validateAnnouncement(makeEvent({}, { users: badUsers }), 1500);
+    assert.equal(result.ok, true, `expected users=${JSON.stringify(badUsers)} to still validate`);
+    assert.deepEqual(result.userCounts, {});
+  }
+});
+
+test("one invalid users entry is dropped without discarding sibling valid entries", () => {
+  const event = makeEvent({}, {
+    domains: ["pay.example.com", "tips.example.org"].sort(),
+    users: [
+      { domain: "pay.example.com", count: 3 },
+      { domain: "tips.example.org", count: -1 },
+    ],
+  });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.userCounts, { "pay.example.com": 3 });
+});

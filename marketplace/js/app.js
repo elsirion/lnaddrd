@@ -212,7 +212,18 @@ function startDiscovery() {
         // Gated on validated.ok so a malformed announcement never burns the
         // pubkey's one shot at being counted — an operator that republishes
         // a corrected, valid announcement later still gets its count fetched.
-        if (validated.ok && !countedPubkeys.has(event.pubkey)) {
+        //
+        // Also gated on the announcement lacking a usable self-reported
+        // count (validated.userCounts, sanitized by announcement.js — see
+        // docs/protocol/02's "users" section): per the announced-user-counts
+        // plan, an operator that announces a usable count for at least one
+        // domain never enters the backup-record scan set at all, so it's
+        // deliberately left out of countedPubkeys/pendingCountPubkeys here.
+        // If a later republish drops that field, hasUsableCounts goes false
+        // and — since the pubkey was never added to countedPubkeys — it
+        // falls into the normal scan path from that point on.
+        const hasUsableCounts = validated.ok && Object.keys(validated.userCounts ?? {}).length > 0;
+        if (validated.ok && !hasUsableCounts && !countedPubkeys.has(event.pubkey)) {
           countedPubkeys.add(event.pubkey);
           pendingCountPubkeys.add(event.pubkey);
           scheduleCountFetch();
@@ -319,9 +330,16 @@ function buildOperatorRows() {
         // onevent handler / scheduleCountFetch above) once counts.js's
         // fetchBackupCounts resolves for this pubkey; undefined until then,
         // which buildRows carries through unchanged and render.js's
-        // usersBadgeText renders as "…".
+        // usersBadgeText renders as "…". Unused by buildRows for any domain
+        // that has its own announced count (see userCounts below), and never
+        // populated at all for an operator that announced a usable count for
+        // at least one domain (see the scan-gating comment above).
         usersCount: entry.usersCount,
         usersApprox: entry.usersApprox,
+        // Sanitized per-domain self-reported counts (announcement.js's
+        // validateAnnouncement), `{domain: count}`. buildRows prefers an
+        // entry here over the operator-wide scan count above, per row.
+        userCounts: entry.validated.userCounts,
       });
       metaByOrigin.set(`${pubkey}:${origin}`, {
         about: announcement.about,

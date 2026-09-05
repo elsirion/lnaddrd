@@ -301,15 +301,25 @@ NIP-98 requests); the key material itself never leaves the extension. See the
 [registration API](docs/protocol/03-registration-api.md) microstandards for
 the discovery and API contracts the marketplace implements against.
 
-Each domain row's "users" figure is a per-operator count of that operator's
-encrypted [backup records](docs/protocol/01-private-backup-records.md) on the
-discovery relays — one record per registered address, regardless of which of
-the operator's domains it belongs to. It's a public-Nostr-data proxy for
-"how many addresses has this operator registered," not a live database
-query: it may include addresses that were later deleted (a backup record
-isn't necessarily removed on deletion) and, if the source relays hold more
-matching records than a single query returns, the app shows "N+" rather
-than an exact figure.
+Each domain row's "users" figure comes from one of two sources, in order of
+preference. If the operator's announcement self-reports a per-domain active
+address count (the `users` field described in the
+[service announcement](docs/protocol/02-service-announcements.md)
+microstandard), the marketplace shows that number as-is, badged "Self-reported
+by the operator" — it's an operator claim, not independently verified. If the
+operator didn't announce a usable count for a domain, and it didn't announce
+one for any of its other domains either, the marketplace falls back to
+scanning: a per-operator count of that operator's encrypted
+[backup records](docs/protocol/01-private-backup-records.md) on the discovery
+relays — one record per registered address, regardless of which of the
+operator's domains it belongs to. It's a public-Nostr-data proxy for "how many
+addresses has this operator registered," not a live database query: it may
+include addresses that were later deleted (a backup record isn't necessarily
+removed on deletion) and, if the source relays hold more matching records than
+a single query returns, the app shows "N+" rather than an exact figure. An
+operator that self-reports a count for at least one domain is never scanned at
+all; any of its other domains lacking their own announced entry simply show no
+figure, rather than a stale scan-derived one.
 
 ## Legacy PostgreSQL import
 

@@ -42,6 +42,7 @@ test("buildRows: one row per verified domain, carrying operator-level fields", (
     ],
     usersCount: 10,
     usersApprox: false,
+    usersSource: "observed",
   });
 });
 
@@ -83,6 +84,64 @@ test("buildRows: flattens rows across multiple operators", () => {
     operator({ pubkey: "op2", verifiedDomains: ["two.example.com"], pricing: [] }),
   ]);
   assert.deepEqual(rows.map(r => r.domain), ["one.example.com", "two.example.com"]);
+});
+
+// -- buildRows: announced vs. observed user counts ----------------------
+//
+// Per docs/superpowers/plans/2026-09-05-announced-user-counts.md's Global
+// Constraints: an announced per-domain count wins over the operator-wide
+// scan count. An operator that announced a usable count for at least one
+// domain never gets scanned at all (app.js), so any of its rows lacking
+// their own announced entry get no number ("unavailable"), not the
+// operator-wide scan figure and not "loading".
+
+test("buildRows: announced per-domain count takes precedence over the operator-wide scan count", () => {
+  const rows = buildRows([
+    operator({ usersCount: 999, usersApprox: true, userCounts: { "pay.example.com": 7 } }),
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].usersCount, 7);
+  assert.equal(rows[0].usersApprox, false);
+  assert.equal(rows[0].usersSource, "announced");
+});
+
+test("buildRows: operator with no userCounts falls back to the operator-wide scan count", () => {
+  const rows = buildRows([operator({ usersCount: 42, usersApprox: true, userCounts: {} })]);
+  assert.equal(rows[0].usersCount, 42);
+  assert.equal(rows[0].usersApprox, true);
+  assert.equal(rows[0].usersSource, "observed");
+});
+
+test("buildRows: still-loading scan count (undefined) is reported as observed, not announced", () => {
+  const rows = buildRows([operator({ usersCount: undefined, usersApprox: undefined, userCounts: undefined })]);
+  assert.equal(rows[0].usersCount, undefined);
+  assert.equal(rows[0].usersSource, "observed");
+});
+
+test("buildRows: mixed operator — one domain announced, the other not — the other gets 'unavailable', not the scan count", () => {
+  const rows = buildRows([
+    operator({
+      verifiedDomains: ["a.example.com", "b.example.com"],
+      pricing: [],
+      usersCount: 500, // never actually populated for a skipped operator in
+      usersApprox: true, // real app.js wiring, but set here to prove buildRows
+      // ignores it once any domain has an announced count.
+      userCounts: { "a.example.com": 3 },
+    }),
+  ]);
+  const a = rows.find(r => r.domain === "a.example.com");
+  const b = rows.find(r => r.domain === "b.example.com");
+  assert.equal(a.usersCount, 3);
+  assert.equal(a.usersApprox, false);
+  assert.equal(a.usersSource, "announced");
+  assert.equal(b.usersCount, undefined);
+  assert.equal(b.usersSource, "unavailable");
+});
+
+test("buildRows: an announced zero count is kept (not treated as missing)", () => {
+  const rows = buildRows([operator({ userCounts: { "pay.example.com": 0 } })]);
+  assert.equal(rows[0].usersCount, 0);
+  assert.equal(rows[0].usersSource, "announced");
 });
 
 // -- filterRows ---------------------------------------------------------

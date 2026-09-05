@@ -86,20 +86,36 @@ function detailLine({ about, contact, termsUrl, announcedAt }) {
   return detail;
 }
 
-/** Formats the registered-users badge text: "…" while the count is still
- * loading (usersCount not yet set for this operator), otherwise "N users" or
- * "N+ users" when the count is approximate (a relay query hit its cap — see
- * counts.js). */
-function usersBadgeText(usersCount, usersApprox) {
+/** Formats the registered-users badge text: "—" when the operator announced
+ * a usable count for at least one domain but not this row's (so no scan will
+ * ever fill it in — see browse.js's `usersSource: "unavailable"`), "…" while
+ * an operator-wide scan count is still loading, otherwise "N users" or "N+
+ * users" when the count is approximate (a relay query hit its cap — see
+ * counts.js). Announced counts (`usersSource: "announced"`) are always
+ * exact, so `usersApprox` is false for them. */
+function usersBadgeText(usersCount, usersApprox, usersSource) {
+  if (usersSource === "unavailable") return "—";
   if (usersCount === undefined || usersCount === null) return "…";
   return `${usersCount}${usersApprox ? "+" : ""} user${usersCount === 1 && !usersApprox ? "" : "s"}`;
+}
+
+/** Title for the registered-users badge, per `usersSource` (see browse.js's
+ * `buildRows`): self-reported counts get an attribution distinguishing them
+ * from the supplier-wide backup-record scan; the "unavailable" case (no
+ * announced count for this domain, and no scan was scheduled because the
+ * operator announced a usable count elsewhere) explains why no number will
+ * ever appear. */
+function usersBadgeTitle(usersSource) {
+  if (usersSource === "announced") return "Self-reported by the operator";
+  if (usersSource === "unavailable") return "Operator did not announce a count for this domain";
+  return "Supplier-wide count of backup records across all its domains";
 }
 
 /**
  * Builds one row element for the flat domain list.
  *
  * `row` is a browse.js row (`{domain, origin, operatorName, pubkey,
- * canRegister, tiers, usersCount, usersApprox}`) augmented by app.js with
+ * canRegister, tiers, usersCount, usersApprox, usersSource}`) augmented by app.js with
  * `about`/`contact`/`termsUrl`/`announcedAt` from the operator's
  * announcement (see buildOperatorRows in app.js) — browse.js's own
  * `buildRows` doesn't know about those fields, so they're merged in
@@ -116,7 +132,7 @@ function usersBadgeText(usersCount, usersApprox) {
  * price chip when non-empty.
  */
 export function domainRow(row, handlers, { expanded, onToggleDetail, nameQuery } = {}) {
-  const { domain, operatorName, origin, pubkey, canRegister, tiers, usersCount, usersApprox } = row;
+  const { domain, operatorName, origin, pubkey, canRegister, tiers, usersCount, usersApprox, usersSource } = row;
 
   const wrapper = document.createElement("div");
   wrapper.className = "rounded-lg border border-gray-200 bg-white p-4 shadow-sm flex flex-col gap-2";
@@ -167,8 +183,8 @@ export function domainRow(row, handlers, { expanded, onToggleDetail, nameQuery }
 
   const usersBadge = document.createElement("span");
   usersBadge.className = "text-xs text-gray-500";
-  usersBadge.textContent = usersBadgeText(usersCount, usersApprox);
-  usersBadge.title = "Supplier-wide count of backup records across all its domains";
+  usersBadge.textContent = usersBadgeText(usersCount, usersApprox, usersSource);
+  usersBadge.title = usersBadgeTitle(usersSource);
   right.append(usersBadge);
 
   // Operators without both capabilities get an info-only row: no button,

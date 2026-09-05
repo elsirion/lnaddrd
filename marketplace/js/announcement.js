@@ -19,7 +19,31 @@ export function isPublicHost(host) {
 }
 
 /**
- * Validates an announcement event. Returns {ok: true, origin, dtag, announcement}
+ * Sanitizes an announcement's optional `users` field (docs/protocol/02, the
+ * "users" section) into a plain `{domain: count}` map. Per the doc's
+ * consumer rules, this NEVER fails validation of the announcement as a
+ * whole — a missing/malformed `users` field just yields an empty map, and
+ * individual entries that are invalid (domain not in this announcement's
+ * `domains`, non-numeric/negative/fractional count) are dropped silently
+ * rather than rejecting anything else in the announcement.
+ */
+function sanitizeUserCounts(announcement) {
+  const result = {};
+  if (!announcement || !Array.isArray(announcement.users)) return result;
+  const domains = Array.isArray(announcement.domains) ? announcement.domains : [];
+  const domainSet = new Set(domains);
+  for (const entry of announcement.users) {
+    if (!entry || typeof entry !== "object") continue;
+    const { domain, count } = entry;
+    if (typeof domain !== "string" || !domainSet.has(domain)) continue;
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 0) continue;
+    result[domain] = count;
+  }
+  return result;
+}
+
+/**
+ * Validates an announcement event. Returns {ok: true, origin, dtag, announcement, userCounts}
  * or {ok: false, error}.
  * Mirrors src/nostr/discovery.rs::validate_event (excluding signature check).
  */
@@ -162,6 +186,7 @@ export function validateAnnouncement(event, nowSecs) {
     origin,
     dtag: dTag,
     announcement,
+    userCounts: sanitizeUserCounts(announcement),
   };
 }
 
