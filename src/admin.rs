@@ -131,15 +131,18 @@ const ADMIN_POLICY_JS: &str = r#"
     });
   }
   document.addEventListener('DOMContentLoaded', function () { init(document); });
-  document.addEventListener('htmx:afterSwap', function (event) {
-    init(event.detail.target);
-    var status = event.detail.target.closest && event.detail.target.closest('[data-recipient-validation]');
-    if (status) {
-      var form = status.closest('[data-payment-policy]');
+  // htmx 4 renamed its events to colon-namespaced names and fires them on the
+  // request's source element, so recompute from the document instead of
+  // relying on the event detail's shape.
+  document.addEventListener('htmx:after:swap', function () {
+    init(document);
+    document.querySelectorAll('[data-payment-policy]').forEach(function (form) {
+      var status = form.querySelector('[data-recipient-validation]');
+      if (!status) return;
       var valid = status.querySelector('[data-valid="true"]') !== null;
       status.dataset.valid = valid ? 'true' : 'false';
       form.querySelector('[data-save-pricing]').disabled = form.querySelector('[data-payment-enabled]').checked && !valid;
-    }
+    });
   });
 })();
 "#;
@@ -1328,6 +1331,31 @@ fn ensure_private_permissions(metadata: &fs::Metadata, path: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_script_listens_for_events_the_vendored_htmx_dispatches() {
+        let htmx = include_str!("../assets/htmx-4.0.0.min.js");
+        let mut names = Vec::new();
+        let mut rest = ADMIN_POLICY_JS;
+        while let Some(start) = rest.find("htmx:") {
+            let tail = &rest[start..];
+            let end = tail
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != ':')
+                .unwrap_or(tail.len());
+            names.push(&tail[..end]);
+            rest = &tail[end..];
+        }
+        assert!(
+            !names.is_empty(),
+            "expected the script to subscribe to htmx events"
+        );
+        for name in names {
+            assert!(
+                htmx.contains(name),
+                "ADMIN_POLICY_JS listens for {name}, which the vendored htmx never dispatches"
+            );
+        }
+    }
 
     #[test]
     fn pricing_editor_is_structured_and_validation_gated() {
