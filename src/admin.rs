@@ -46,12 +46,18 @@ const ADMIN_POLICY_JS: &str = r#"
     form.querySelector('[data-save-pricing]').disabled = true;
   }
 
-  function syncTiers(form, requestCheck) {
+  function syncTiers(form) {
+    var tierList = form.querySelector('[data-tier-list]');
     var rows = Array.from(form.querySelectorAll('[data-tier-row]'));
     rows.sort(function (a, b) {
       return Number(a.querySelector('[data-tier-length]').value) - Number(b.querySelector('[data-tier-length]').value);
     });
-    rows.forEach(function (row) { form.querySelector('[data-tier-list]').appendChild(row); });
+    // Moving a node blurs a focused input inside it, so only reorder the DOM
+    // once focus has left the tier list; validation below always uses the
+    // sorted order regardless of what is on screen.
+    if (!tierList.contains(document.activeElement)) {
+      rows.forEach(function (row) { tierList.appendChild(row); });
+    }
     var error = form.querySelector('[data-tier-error]');
     var values = [];
     var previousLength = 0;
@@ -76,24 +82,29 @@ const ADMIN_POLICY_JS: &str = r#"
     form.querySelector('[data-tiers-value]').value = values.join('\n');
     error.textContent = message;
     error.classList.toggle('hidden', !message);
+    // Tier edits never re-check the recipient (saving re-validates everything
+    // server-side anyway): the button stays live as long as the tiers parse
+    // and the last recipient check succeeded.
     if (form.querySelector('[data-payment-enabled]').checked) {
-      form.querySelector('[data-save-pricing]').disabled = true;
-      if (!message && requestCheck && form.querySelector('[data-payment-destination]').value.trim()) {
-        pending(form, 'Checking recipient and LUD-21 support…');
-        htmx.trigger(form.querySelector('[data-payment-destination]'), 'pricing-tiers-changed');
-      }
+      var recipientValid = form.querySelector('[data-recipient-validation] [data-valid="true"]') !== null;
+      form.querySelector('[data-save-pricing]').disabled = !!message || !recipientValid;
     }
     return !message;
   }
 
   function addTier(form) {
+    var lengths = Array.from(form.querySelectorAll('[data-tier-length]')).map(function (input) {
+      return Number(input.value);
+    }).filter(function (value) { return Number.isInteger(value) && value >= 1 && value <= 64; });
+    var next = Math.min(64, lengths.length ? Math.max.apply(null, lengths) + 1 : 1);
     var row = document.createElement('div');
     row.dataset.tierRow = '';
     row.className = 'grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end';
-    row.innerHTML = '<div><label class="mb-2 block text-xs font-medium text-gray-700">Username shorter than</label><input data-tier-length type="number" min="1" max="64" step="1" required value="1" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><div><label class="mb-2 block text-xs font-medium text-gray-700">Price (sats)</label><input data-tier-price type="number" min="0" step="0.001" required value="0" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50">Remove</button>';
+    row.innerHTML = '<div><label class="mb-2 block text-xs font-medium text-gray-700">Up to length</label><input data-tier-length type="number" min="1" max="64" step="1" required class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><div><label class="mb-2 block text-xs font-medium text-gray-700">Price (sats)</label><input data-tier-price type="number" min="0" step="0.001" required value="0" class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"></div><button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50">Remove</button>';
+    row.querySelector('[data-tier-length]').value = next;
     form.querySelector('[data-tier-list]').appendChild(row);
     row.querySelector('[data-tier-length]').focus();
-    syncTiers(form, false);
+    syncTiers(form);
   }
 
   function init(root) {
@@ -105,7 +116,7 @@ const ADMIN_POLICY_JS: &str = r#"
       function toggle() {
         fields.classList.toggle('hidden', !enabled.checked);
         if (!enabled.checked) form.querySelector('[data-save-pricing]').disabled = false;
-        else if (syncTiers(form, false) && destination.value.trim()) {
+        else if (syncTiers(form) && destination.value.trim()) {
           pending(form, 'Checking recipient and LUD-21 support…');
           htmx.trigger(destination, 'pricing-tiers-changed');
         }
@@ -117,16 +128,19 @@ const ADMIN_POLICY_JS: &str = r#"
       form.querySelector('[data-add-tier]').addEventListener('click', function () { addTier(form); });
       form.querySelector('[data-tier-list]').addEventListener('click', function (event) {
         var button = event.target.closest('[data-remove-tier]');
-        if (button) { button.closest('[data-tier-row]').remove(); syncTiers(form, true); }
+        if (button) { button.closest('[data-tier-row]').remove(); syncTiers(form); }
       });
-      form.querySelector('[data-tier-list]').addEventListener('input', function () { syncTiers(form, true); });
+      form.querySelector('[data-tier-list]').addEventListener('input', function () { syncTiers(form); });
+      form.querySelector('[data-tier-list]').addEventListener('focusout', function () {
+        setTimeout(function () { syncTiers(form); }, 0);
+      });
       form.addEventListener('submit', function (event) {
-        if (enabled.checked && (!syncTiers(form, false) || form.querySelector('[data-recipient-validation] [data-valid="true"]') === null)) {
+        if (enabled.checked && (!syncTiers(form) || form.querySelector('[data-recipient-validation] [data-valid="true"]') === null)) {
           event.preventDefault();
           pending(form, 'Complete a successful recipient check before saving.');
         }
       });
-      syncTiers(form, false);
+      syncTiers(form);
       toggle();
     });
   }
@@ -141,7 +155,8 @@ const ADMIN_POLICY_JS: &str = r#"
       if (!status) return;
       var valid = status.querySelector('[data-valid="true"]') !== null;
       status.dataset.valid = valid ? 'true' : 'false';
-      form.querySelector('[data-save-pricing]').disabled = form.querySelector('[data-payment-enabled]').checked && !valid;
+      var tiersBroken = !form.querySelector('[data-tier-error]').classList.contains('hidden');
+      form.querySelector('[data-save-pricing]').disabled = form.querySelector('[data-payment-enabled]').checked && (!valid || tiersBroken);
     });
   });
 })();
@@ -1115,7 +1130,7 @@ fn tier_row(max_length: Option<u16>, price_msat: Option<u64>) -> maud::Markup {
     let price_sats = price_msat.map(format_sats);
     html! {
         div data-tier-row class="grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end" {
-            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Username shorter than" } input data-tier-length type="number" min="1" max="64" step="1" required value=[max_length.map(|value| value.to_string())] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
+            div { label class="mb-2 block text-xs font-medium text-gray-700" { "Up to length" } input data-tier-length type="number" min="1" max="64" step="1" required value=[max_length.map(|value| value.to_string())] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
             div { label class="mb-2 block text-xs font-medium text-gray-700" { "Price (sats)" } input data-tier-price type="number" min="0" step="0.001" required value=[price_sats] class="block w-full rounded-lg border border-gray-300 bg-white p-2.5 text-sm"; }
             button type="button" data-remove-tier class="rounded-lg px-3 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50" { "Remove" }
         }
@@ -1392,7 +1407,7 @@ mod tests {
         assert!(markup.contains("data-add-tier"));
         assert!(markup.contains("/admin/payment-policy/validate"));
         assert!(markup.contains("data-save-pricing"));
-        assert!(markup.contains("Username shorter than"));
+        assert!(markup.contains("Up to length"));
         assert!(markup.contains("Price (sats)"));
         assert!(markup.contains("value=\"10\""));
         assert!(!markup.contains("textarea"));
