@@ -174,7 +174,10 @@ nameInput.addEventListener("input", () => {
 });
 freeOnlyInput.addEventListener("change", () => renderOperators());
 sortSelect.addEventListener("change", () => {
-  sortLengthInput.classList.toggle("hidden", sortSelect.value !== "price");
+  const wrap = document.getElementById("browse-sort-length-wrap");
+  const showKnob = sortSelect.value === "price";
+  wrap.classList.toggle("hidden", !showKnob);
+  wrap.classList.toggle("flex", showKnob);
   renderOperators();
 });
 sortLengthInput.addEventListener("input", () => renderOperators());
