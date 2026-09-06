@@ -39,16 +39,27 @@
           <label for="browse-name" class="block mb-1 text-xs font-medium text-gray-700">Check a name</label>
           <input id="browse-name" type="text" placeholder="e.g. satoshi" autocomplete="off"
             class="block w-full p-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 text-sm focus:ring-blue-500 focus:border-blue-500">
-          <p class="mt-1 text-xs text-gray-500">shows domains where this name is free to register; availability is checked when you register</p>
+          <div class="mt-1 flex items-center justify-between gap-3">
+            <p class="text-xs text-gray-500">shows each domain's price for this name; availability is checked when you register</p>
+            <label class="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-gray-700">
+              <input id="browse-free-only" type="checkbox" class="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+              Free only
+            </label>
+          </div>
         </div>
-        <div class="sm:w-56">
+        <div class="sm:w-64">
           <label for="browse-sort" class="block mb-1 text-xs font-medium text-gray-700">Sort by</label>
-          <select id="browse-sort"
-            class="block w-full p-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 text-sm focus:ring-blue-500 focus:border-blue-500">
-            <option value="alpha">Alphabetical</option>
-            <option value="price">Price</option>
-            <option value="users">Registered users</option>
-          </select>
+          <div class="flex gap-2">
+            <select id="browse-sort"
+              class="block w-full p-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 text-sm focus:ring-blue-500 focus:border-blue-500">
+              <option value="alpha">Alphabetical</option>
+              <option value="price">Price</option>
+              <option value="users">Registered users</option>
+            </select>
+            <input id="browse-sort-length" type="number" min="1" max="64" step="1" value="8"
+              title="Sort by each domain's price for a name of this length"
+              class="hidden w-16 shrink-0 p-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-900 text-sm focus:ring-blue-500 focus:border-blue-500">
+          </div>
         </div>
       </section>
       <section id="operators" class="flex flex-col gap-3"></section>

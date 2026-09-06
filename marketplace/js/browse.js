@@ -83,14 +83,16 @@ export function buildRows(operators) {
 /**
  * Filters rows in memory.
  *
- * `query` (case-insensitive substring on `domain` or `operatorName`) and
- * `name` (non-empty: keep only rows where `priceForLength(tiers,
- * name.length) === 0`, i.e. that name would register free) combine with AND
- * semantics. Either filter is skipped when its value is absent/empty. The
- * strict `=== 0` check means `null` (that name's length is unavailable —
- * see pricing.js's priceForLength) never passes the filter either.
+ * `query` (case-insensitive substring on `domain` or `operatorName`) filters
+ * on its own. A `name` by itself does NOT filter — the UI shows each row's
+ * computed price for it instead — but with `freeOnly` set it keeps only rows
+ * where `priceForLength(tiers, name.length) === 0`, i.e. that name would
+ * register free. Filters combine with AND semantics and are skipped when
+ * their value is absent/empty. The strict `=== 0` check means `null` (that
+ * name's length is unavailable — see pricing.js's priceForLength) never
+ * passes the free filter either.
  */
-export function filterRows(rows, { query, name } = {}) {
+export function filterRows(rows, { query, name, freeOnly } = {}) {
   let result = rows;
 
   if (query) {
@@ -102,7 +104,7 @@ export function filterRows(rows, { query, name } = {}) {
     );
   }
 
-  if (name) {
+  if (name && freeOnly) {
     result = result.filter(row => priceForLength(row.tiers, name.length) === 0);
   }
 

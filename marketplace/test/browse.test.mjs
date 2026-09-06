@@ -177,38 +177,50 @@ test("filterRows: query matches operatorName case-insensitively", () => {
   assert.deepEqual(result.map(r => r.operatorName), ["Acme Corp"]);
 });
 
-test("filterRows: name filter keeps only zero-price rows for that name's length", () => {
+test("filterRows: a name alone no longer filters — priced rows stay visible", () => {
   const cheap = row({ domain: "cheap.example.com", tiers: [{ max_length: 64, price: 0 }] });
   const paid = row({ domain: "paid.example.com", tiers: [{ max_length: 64, price: 1000 }] });
   const result = filterRows([cheap, paid], { name: "alice" });
+  assert.deepEqual(result.map(r => r.domain), ["cheap.example.com", "paid.example.com"]);
+});
+
+test("filterRows: freeOnly keeps only zero-price rows for that name's length", () => {
+  const cheap = row({ domain: "cheap.example.com", tiers: [{ max_length: 64, price: 0 }] });
+  const paid = row({ domain: "paid.example.com", tiers: [{ max_length: 64, price: 1000 }] });
+  const result = filterRows([cheap, paid], { name: "alice", freeOnly: true });
   assert.deepEqual(result.map(r => r.domain), ["cheap.example.com"]);
 });
 
-test("filterRows: name filter excludes unavailable (null-price) rows, not just non-zero ones", () => {
+test("filterRows: freeOnly excludes unavailable (null-price) rows, not just non-zero ones", () => {
   const free = row({ domain: "free.example.com", tiers: [{ max_length: 64, price: 0 }] });
   // No tier covers a 5-char name here -> priceForLength returns null (unavailable).
   const unavailable = row({ domain: "unavailable.example.com", tiers: [{ max_length: 3, price: 0 }] });
-  const result = filterRows([free, unavailable], { name: "alice" });
+  const result = filterRows([free, unavailable], { name: "alice", freeOnly: true });
   assert.deepEqual(result.map(r => r.domain), ["free.example.com"]);
 });
 
-test("filterRows: name filter uses the name's own length against tier boundaries", () => {
+test("filterRows: freeOnly uses the name's own length against tier boundaries", () => {
   const rows = [
     row({ domain: "a.example.com", tiers: [{ max_length: 3, price: 0 }, { max_length: 64, price: 1000 }] }),
   ];
   // "bob" has length 3 -> first tier matches -> price 0 -> kept
-  assert.deepEqual(filterRows(rows, { name: "bob" }).map(r => r.domain), ["a.example.com"]);
+  assert.deepEqual(filterRows(rows, { name: "bob", freeOnly: true }).map(r => r.domain), ["a.example.com"]);
   // "alice" has length 5 -> falls to second tier -> price 1000 -> dropped
-  assert.deepEqual(filterRows(rows, { name: "alice" }).map(r => r.domain), []);
+  assert.deepEqual(filterRows(rows, { name: "alice", freeOnly: true }).map(r => r.domain), []);
 });
 
-test("filterRows: query and name combine with AND semantics", () => {
+test("filterRows: freeOnly without a name is a no-op", () => {
+  const paid = row({ domain: "paid.example.com", tiers: [{ max_length: 64, price: 1000 }] });
+  assert.deepEqual(filterRows([paid], { freeOnly: true }), [paid]);
+});
+
+test("filterRows: query and freeOnly name filter combine with AND semantics", () => {
   const rows = [
     row({ domain: "free.example.com", operatorName: "Acme", tiers: [{ max_length: 64, price: 0 }] }),
     row({ domain: "paid.example.com", operatorName: "Acme", tiers: [{ max_length: 64, price: 1000 }] }),
     row({ domain: "free.other.com", operatorName: "Zeta", tiers: [{ max_length: 64, price: 0 }] }),
   ];
-  const result = filterRows(rows, { query: "acme", name: "alice" });
+  const result = filterRows(rows, { query: "acme", name: "alice", freeOnly: true });
   assert.deepEqual(result.map(r => r.domain), ["free.example.com"]);
 });
 

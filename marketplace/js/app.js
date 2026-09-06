@@ -152,7 +152,9 @@ const handlers = {
 // here.
 const searchInput = document.getElementById("browse-search");
 const nameInput = document.getElementById("browse-name");
+const freeOnlyInput = document.getElementById("browse-free-only");
 const sortSelect = document.getElementById("browse-sort");
+const sortLengthInput = document.getElementById("browse-sort-length");
 // Which rows currently show their supplier detail line, keyed
 // `${pubkey}:${domain}` (per-row, not per-operator — see render.js's
 // domainRow doc comment).
@@ -163,8 +165,19 @@ function rowKey(row) {
 }
 
 searchInput.addEventListener("input", () => renderOperators());
-nameInput.addEventListener("input", () => renderOperators());
-sortSelect.addEventListener("change", () => renderOperators());
+nameInput.addEventListener("input", () => {
+  // A typed name is almost always the length the user cares about, so it
+  // follows into the price-sort knob (still hand-editable afterwards).
+  const name = nameInput.value.trim();
+  if (name) sortLengthInput.value = Math.min(64, name.length);
+  renderOperators();
+});
+freeOnlyInput.addEventListener("change", () => renderOperators());
+sortSelect.addEventListener("change", () => {
+  sortLengthInput.classList.toggle("hidden", sortSelect.value !== "price");
+  renderOperators();
+});
+sortLengthInput.addEventListener("input", () => renderOperators());
 
 function startDiscovery() {
   const relays = currentRelays();
@@ -369,8 +382,10 @@ function renderOperators() {
 
   const query = searchInput.value.trim();
   const name = nameInput.value.trim();
-  const filtered = filterRows(rows, { query, name });
-  const sorted = sortRows(filtered, { by: sortSelect.value, length: name ? name.length : DEFAULT_SORT_LENGTH });
+  const filtered = filterRows(rows, { query, name, freeOnly: freeOnlyInput.checked });
+  const knob = Number.parseInt(sortLengthInput.value, 10);
+  const sortLength = Number.isInteger(knob) && knob >= 1 && knob <= 64 ? knob : DEFAULT_SORT_LENGTH;
+  const sorted = sortRows(filtered, { by: sortSelect.value, length: sortLength });
 
   container.replaceChildren();
   for (const row of sorted) {
