@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildRows, filterRows, sortRows } from "../js/browse.js";
+import { buildRows, filterRows, isReserved, sortRows } from "../js/browse.js";
 
 function operator(overrides = {}) {
   return {
@@ -40,6 +40,7 @@ test("buildRows: one row per verified domain, carrying operator-level fields", (
       { max_length: 4, price: 100000 },
       { max_length: 64, price: 0 },
     ],
+    reserved: [],
     usersCount: 10,
     usersApprox: false,
     usersSource: "observed",
@@ -212,6 +213,21 @@ test("filterRows: freeOnly uses the name's own length against tier boundaries", 
 test("filterRows: freeOnly without a name is a no-op", () => {
   const paid = row({ domain: "paid.example.com", tiers: [{ max_length: 64, price: 1000 }] });
   assert.deepEqual(filterRows([paid], { freeOnly: true }), [paid]);
+});
+
+test("filterRows: freeOnly excludes rows where the name is reserved even at price 0", () => {
+  const open = row({ domain: "open.example.com", tiers: [] });
+  const guarded = row({ domain: "guarded.example.com", tiers: [], reserved: ["alice"] });
+  const result = filterRows([open, guarded], { name: "alice", freeOnly: true });
+  assert.deepEqual(result.map(r => r.domain), ["open.example.com"]);
+});
+
+test("isReserved: matches case-insensitively and only exact names", () => {
+  const guarded = row({ reserved: ["Admin"] });
+  assert.equal(isReserved(guarded, "admin"), true);
+  assert.equal(isReserved(guarded, "administrator"), false);
+  assert.equal(isReserved(row({}), "admin"), false);
+  assert.equal(isReserved(row({ reserved: ["admin"] }), ""), false);
 });
 
 test("filterRows: query and freeOnly name filter combine with AND semantics", () => {

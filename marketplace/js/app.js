@@ -356,6 +356,8 @@ function buildOperatorRows() {
         // validateAnnouncement), `{domain: count}`. buildRows prefers an
         // entry here over the operator-wide scan count above, per row.
         userCounts: entry.validated.userCounts,
+        // Sanitized per-domain reserved-name lists, `{domain: [names]}`.
+        reservedNames: entry.validated.reservedNames,
       });
       metaByOrigin.set(`${pubkey}:${origin}`, {
         about: announcement.about,

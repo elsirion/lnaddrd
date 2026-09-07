@@ -144,6 +144,34 @@ test("users entry with a count beyond MAX_SAFE_INTEGER is dropped", () => {
   assert.deepEqual(result.userCounts, {});
 });
 
+test("reserved entries are sanitized into a per-domain map", () => {
+  const event = makeEvent({}, { reserved: [{ domain: "pay.example.com", names: ["admin", "www"] }] });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.reservedNames, { "pay.example.com": ["admin", "www"] });
+});
+
+test("reserved entry for an unannounced domain is dropped, non-string names filtered", () => {
+  const event = makeEvent({}, {
+    reserved: [
+      { domain: "unknown.example.net", names: ["admin"] },
+      { domain: "pay.example.com", names: ["ok", 5, null] },
+    ],
+  });
+  const result = validateAnnouncement(event, 1500);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.reservedNames, { "pay.example.com": ["ok"] });
+});
+
+test("absent or malformed reserved field never invalidates the announcement", () => {
+  const absent = validateAnnouncement(makeEvent({}, {}), 1500);
+  assert.equal(absent.ok, true);
+  assert.deepEqual(absent.reservedNames, {});
+  const malformed = validateAnnouncement(makeEvent({}, { reserved: "nope" }), 1500);
+  assert.equal(malformed.ok, true);
+  assert.deepEqual(malformed.reservedNames, {});
+});
+
 test("users entry with a string count is dropped", () => {
   const event = makeEvent({}, { users: [{ domain: "pay.example.com", count: "42" }] });
   const result = validateAnnouncement(event, 1500);

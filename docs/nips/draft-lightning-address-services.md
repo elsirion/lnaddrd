@@ -63,6 +63,9 @@ long-lived service key:
   "users": [
     { "domain": "pay.example.com", "count": 1312 }
   ],
+  "reserved": [
+    { "domain": "pay.example.com", "names": ["admin", "www"] }
+  ],
   "contact": "npub1...",
   "terms_url": "https://pay.example.com/terms"
 }
@@ -109,6 +112,15 @@ domain. They are unverifiable claims: clients MUST drop entries whose
 integer (dropping entries never invalidates the announcement), SHOULD
 label the numbers as self-reported when displaying them, and MAY
 cross-check them against other public signals.
+
+### Reserved names
+
+`reserved` entries are OPTIONAL per-domain lists of usernames the service
+will not register publicly, so clients can preview a name as unavailable
+instead of free or priced. Clients MUST drop entries whose `domain` is
+not listed in `domains` and individual `names` values that are not
+strings; dropping entries never invalidates the announcement. The list is
+a preview — the API's quote is authoritative.
 
 ## Domain verification
 

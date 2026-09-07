@@ -1,4 +1,5 @@
 import { formatSats, priceForLength, tierSummary } from "./pricing.js";
+import { isReserved } from "./browse.js";
 
 /**
  * Converts an announcement's `contact` field into a `nostr:` URI, or null
@@ -164,14 +165,20 @@ export function domainRow(row, handlers, { expanded, onToggleDetail, nameQuery }
   left.append(priceChip);
 
   if (nameQuery) {
+    // Announced reserved names beat the price preview: the server would
+    // reject the registration outright. priceForLength returns null when
+    // this name's length is unavailable (no tier matches — registration
+    // would be rejected server-side, see pricing.js). The row-level name
+    // filter in browse.js already drops reserved/unavailable rows while a
+    // free-only name-check search is active, but this chip can still be
+    // built from other render paths, so it renders correctly regardless of
+    // whether that filter ran.
     const namePrice = priceForLength(tiers, nameQuery.length);
-    // priceForLength returns null when this name's length is unavailable
-    // (no tier matches — registration would be rejected server-side, see
-    // pricing.js). The row-level name filter in browse.js already drops
-    // such rows while a name-check search is active, but this chip can
-    // still be built from other render paths, so it renders correctly
-    // regardless of whether that filter ran.
-    const namePriceText = namePrice === null ? "unavailable" : formatSats(namePrice);
+    const namePriceText = isReserved(row, nameQuery)
+      ? "reserved"
+      : namePrice === null
+        ? "unavailable"
+        : formatSats(namePrice);
     const namePriceChip = document.createElement("span");
     namePriceChip.className = "rounded bg-blue-50 text-blue-700 text-xs font-medium px-2 py-0.5";
     namePriceChip.textContent = `${nameQuery}@${domain}: ${namePriceText}`;

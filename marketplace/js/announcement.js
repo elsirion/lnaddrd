@@ -42,6 +42,24 @@ function sanitizeUserCounts(announcement) {
   return result;
 }
 
+// Sanitizes the optional `reserved` array into {domain: [names]}. Same
+// contract as sanitizeUserCounts: invalid entries (unknown domain,
+// non-string names) are dropped silently, never failing validation.
+function sanitizeReservedNames(announcement) {
+  const result = {};
+  if (!announcement || !Array.isArray(announcement.reserved)) return result;
+  const domains = Array.isArray(announcement.domains) ? announcement.domains : [];
+  const domainSet = new Set(domains);
+  for (const entry of announcement.reserved) {
+    if (!entry || typeof entry !== "object") continue;
+    const { domain, names } = entry;
+    if (typeof domain !== "string" || !domainSet.has(domain)) continue;
+    if (!Array.isArray(names)) continue;
+    result[domain] = names.filter(name => typeof name === "string");
+  }
+  return result;
+}
+
 /**
  * Validates an announcement event. Returns {ok: true, origin, dtag, announcement, userCounts}
  * or {ok: false, error}.
@@ -187,6 +205,7 @@ export function validateAnnouncement(event, nowSecs) {
     dtag: dTag,
     announcement,
     userCounts: sanitizeUserCounts(announcement),
+    reservedNames: sanitizeReservedNames(announcement),
   };
 }
 

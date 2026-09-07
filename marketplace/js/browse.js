@@ -42,10 +42,12 @@ export function buildRows(operators) {
     const domains = Array.isArray(operator.verifiedDomains) ? operator.verifiedDomains : [];
     const userCounts = operator.userCounts && typeof operator.userCounts === "object" ? operator.userCounts : {};
     const hasAnnouncedCounts = Object.keys(userCounts).length > 0;
+    const reservedNames = operator.reservedNames && typeof operator.reservedNames === "object" ? operator.reservedNames : {};
 
     for (const domain of domains) {
       const pricingEntry = pricing.find(p => p.domain === domain);
       const tiers = pricingEntry && Array.isArray(pricingEntry.tiers) ? pricingEntry.tiers : [];
+      const reserved = Array.isArray(reservedNames[domain]) ? reservedNames[domain] : [];
 
       let usersCount;
       let usersApprox;
@@ -71,6 +73,7 @@ export function buildRows(operators) {
         pubkey: operator.pubkey,
         canRegister,
         tiers,
+        reserved,
         usersCount,
         usersApprox,
         usersSource,
@@ -105,10 +108,19 @@ export function filterRows(rows, { query, name, freeOnly } = {}) {
   }
 
   if (name && freeOnly) {
-    result = result.filter(row => priceForLength(row.tiers, name.length) === 0);
+    result = result.filter(
+      row => priceForLength(row.tiers, name.length) === 0 && !isReserved(row, name)
+    );
   }
 
   return result;
+}
+
+/** Whether `name` is on the row's announced reserved list (case-insensitive). */
+export function isReserved(row, name) {
+  if (!name || !Array.isArray(row.reserved)) return false;
+  const needle = name.toLowerCase();
+  return row.reserved.some(entry => entry.toLowerCase() === needle);
 }
 
 function compareDomain(a, b) {

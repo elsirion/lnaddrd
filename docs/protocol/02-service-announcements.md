@@ -68,6 +68,9 @@ The content is UTF-8 JSON:
     {"domain": "pay.example.com", "count": 42},
     {"domain": "tips.example.org", "count": 0}
   ],
+  "reserved": [
+    {"domain": "pay.example.com", "names": ["admin", "www"]}
+  ],
   "software": {"name": "lnaddrd", "version": "0.2.0"}
 }
 ```
@@ -213,6 +216,16 @@ validation of the whole announcement. Because the field is an operator
 claim rather than a cryptographic proof, consumers MAY cross-check it
 against other available evidence (for example a scan of published backup
 records) and MAY prefer, average, or flag a mismatch as they see fit.
+
+`reserved` announces usernames that cannot be registered publicly, with
+the exact shape `"reserved": [{"domain": "<announced domain>", "names":
+["<username>", ...]}]`. The field is optional and its absence MUST NOT
+invalidate an announcement; a domain without an entry simply announces no
+reserved names (the live quote remains authoritative either way).
+Publishers SHOULD sort `names` and MUST list each domain at most once.
+Consumers MUST silently drop entries whose `domain` is not in `domains`
+and individual `names` values that are not strings, and SHOULD treat a
+reserved username as unavailable in previews rather than free or priced.
 
 Backup relay tags reveal infrastructure choices but no private address records.
 Operators concerned about this MAY omit them because the well-known document

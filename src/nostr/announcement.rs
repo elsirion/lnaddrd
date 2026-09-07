@@ -40,6 +40,8 @@ pub struct ServiceAnnouncement {
     pub pricing: Vec<DomainPricing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub users: Option<Vec<DomainUsers>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved: Option<Vec<DomainReserved>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub software: Option<Software>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +54,12 @@ pub struct ServiceAnnouncement {
 pub struct DomainUsers {
     pub domain: String,
     pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainReserved {
+    pub domain: String,
+    pub names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +244,23 @@ fn build_event_from_origin(
             })
         })
         .collect::<Vec<_>>();
+    let reserved = service_configuration
+        .domains
+        .iter()
+        .filter(|(_, config)| !config.reserved_names.is_empty())
+        .map(|(domain, config)| {
+            let mut names = config
+                .reserved_names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>();
+            names.sort();
+            DomainReserved {
+                domain: domain.as_str().to_owned(),
+                names,
+            }
+        })
+        .collect::<Vec<_>>();
     let has_paid = pricing
         .iter()
         .any(|policy| policy.tiers.iter().any(|tier| tier.price > 0));
@@ -277,6 +302,11 @@ fn build_event_from_origin(
         capabilities: capabilities.into_iter().collect(),
         pricing,
         users: if users.is_empty() { None } else { Some(users) },
+        reserved: if reserved.is_empty() {
+            None
+        } else {
+            Some(reserved)
+        },
         software: Some(Software {
             name: "lnaddrd".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -527,6 +557,46 @@ mod tests {
                 .iter()
                 .any(|entry| entry.domain == "second.example.net" && entry.count == 0)
         );
+    }
+
+    #[test]
+    fn build_event_announces_sorted_reserved_names_per_domain() {
+        let (config, mut configuration, keys) = fixture("https://example.com", &["example.com"]);
+        configuration
+            .domains
+            .get_mut(&"example.com".parse().unwrap())
+            .unwrap()
+            .reserved_names = vec!["www".parse().unwrap(), "admin".parse().unwrap()];
+        let event = build_event(
+            &config,
+            &configuration,
+            &keys,
+            1_700_000_000,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+        .unwrap();
+        let announcement: ServiceAnnouncement = serde_json::from_str(&event.content).unwrap();
+        let reserved = announcement.reserved.expect("reserved should be present");
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].domain, "example.com");
+        assert_eq!(reserved[0].names, vec!["admin", "www"]);
+    }
+
+    #[test]
+    fn build_event_omits_reserved_field_without_reserved_names() {
+        let (config, configuration, keys) = fixture("https://example.com", &["example.com"]);
+        let event = build_event(
+            &config,
+            &configuration,
+            &keys,
+            1_700_000_000,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+        .unwrap();
+        let announcement: ServiceAnnouncement = serde_json::from_str(&event.content).unwrap();
+        assert!(announcement.reserved.is_none());
     }
 
     #[test]
